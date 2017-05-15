@@ -1,0 +1,19 @@
+{
+  "name": "sharla-chat",
+  "version": "1.0.0",
+  "description": "Chat module for sharla app",
+  "main": "index.js",
+  "scripts": {},
+  "keywords": [
+    "chat-sharla"
+  ],
+  "author": "Daniel T.",
+  "license": "ISC",
+  "dependencies": {
+    "deepstream.io": "^2.2.2",
+    "deepstream.io-storage-postgres": "^1.0.1",
+    "deepstream.io-storage-rethinkdb": "^1.0.2",
+    "express": "^4.15.2",
+    "ramda": "^0.23.0"
+  }
+}

@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+    <head>
+        <title>Sharla WebSocket chat</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font: 13px Helvetica, Arial; }
+            #unique { background: #000; padding: 3px; position: fixed; bottom: 0; width: 100%; }
+            #unique input { border: 0; padding: 10px; width: 90%; margin-right: .5%; }
+            #unique button { width: 9%; background: rgb(130, 224, 255); border: none; padding: 10px; }
+            #messages { list-style-type: none; margin: 0; padding: 0; }
+            #messages li { padding: 5px 10px; }
+            #messages li:nth-child(odd) { background: #eee; }
+        </style>
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="row">
+                <div class="col-xs-12">
+                    <div class="row">
+                        <div class="col-xs-8 col-offset-2">
+                            <h1>Login</h1>
+                        </div>
+                    </div>
+                    <form class="form-inline">
+                    <div class="form-group">
+                        <label for="username">Name</label>
+                        <input
+                            type="text"
+                            class="form-control"
+                            id="username"
+                            placeholder="Daniel">
+                    </div>
+                    <button
+                        type="button"
+                        id="logIntoChat"
+                        class="btn btn-default">Join The chat</button>
+                    </form>
+                </div>
+            </div>
+            <div class="row">
+                #LIST OF CHAT STARTED
+            </div>
+            <div style="margin:5px; background: rgb(130, 224, 255);">&nbsp;</div>
+            <div class="row">
+                #LIST OF MEMBERS ONLINE
+                <ul id="memberOnline"></ul>
+
+            </div>
+            <div style="margin:5px; background: rgb(130, 224, 255);">&nbsp;</div>
+            <div class="row">
+                <div class="col-xs-12">
+                    <ul id="messages"></ul>
+                </div>
+            </div>
+            <div class="row">
+                <div id='unique'>
+                    <input id="m" autocomplete="off" /><button id='s'>Send</button>
+                </div>
+            </div>
+        </div>
+        <script src="https://code.jquery.com/jquery-1.11.1.js"></script>
+        <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/deepstream.io-client-js/2.1.5/deepstream.js"></script>
+        <script type="text/javascript" src="communication.js"></script>
+    </body>
+</html>
