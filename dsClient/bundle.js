@@ -1,4 +1,6 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+
+},{}],2:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -184,414 +186,1476 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],2:[function(require,module,exports){
+},{}],3:[function(require,module,exports){
+(function (global){
+/*! https://mths.be/punycode v1.4.1 by @mathias */
+;(function(root) {
+
+	/** Detect free variables */
+	var freeExports = typeof exports == 'object' && exports &&
+		!exports.nodeType && exports;
+	var freeModule = typeof module == 'object' && module &&
+		!module.nodeType && module;
+	var freeGlobal = typeof global == 'object' && global;
+	if (
+		freeGlobal.global === freeGlobal ||
+		freeGlobal.window === freeGlobal ||
+		freeGlobal.self === freeGlobal
+	) {
+		root = freeGlobal;
+	}
+
+	/**
+	 * The `punycode` object.
+	 * @name punycode
+	 * @type Object
+	 */
+	var punycode,
+
+	/** Highest positive signed 32-bit float value */
+	maxInt = 2147483647, // aka. 0x7FFFFFFF or 2^31-1
+
+	/** Bootstring parameters */
+	base = 36,
+	tMin = 1,
+	tMax = 26,
+	skew = 38,
+	damp = 700,
+	initialBias = 72,
+	initialN = 128, // 0x80
+	delimiter = '-', // '\x2D'
+
+	/** Regular expressions */
+	regexPunycode = /^xn--/,
+	regexNonASCII = /[^\x20-\x7E]/, // unprintable ASCII chars + non-ASCII chars
+	regexSeparators = /[\x2E\u3002\uFF0E\uFF61]/g, // RFC 3490 separators
+
+	/** Error messages */
+	errors = {
+		'overflow': 'Overflow: input needs wider integers to process',
+		'not-basic': 'Illegal input >= 0x80 (not a basic code point)',
+		'invalid-input': 'Invalid input'
+	},
+
+	/** Convenience shortcuts */
+	baseMinusTMin = base - tMin,
+	floor = Math.floor,
+	stringFromCharCode = String.fromCharCode,
+
+	/** Temporary variable */
+	key;
+
+	/*--------------------------------------------------------------------------*/
+
+	/**
+	 * A generic error utility function.
+	 * @private
+	 * @param {String} type The error type.
+	 * @returns {Error} Throws a `RangeError` with the applicable error message.
+	 */
+	function error(type) {
+		throw new RangeError(errors[type]);
+	}
+
+	/**
+	 * A generic `Array#map` utility function.
+	 * @private
+	 * @param {Array} array The array to iterate over.
+	 * @param {Function} callback The function that gets called for every array
+	 * item.
+	 * @returns {Array} A new array of values returned by the callback function.
+	 */
+	function map(array, fn) {
+		var length = array.length;
+		var result = [];
+		while (length--) {
+			result[length] = fn(array[length]);
+		}
+		return result;
+	}
+
+	/**
+	 * A simple `Array#map`-like wrapper to work with domain name strings or email
+	 * addresses.
+	 * @private
+	 * @param {String} domain The domain name or email address.
+	 * @param {Function} callback The function that gets called for every
+	 * character.
+	 * @returns {Array} A new string of characters returned by the callback
+	 * function.
+	 */
+	function mapDomain(string, fn) {
+		var parts = string.split('@');
+		var result = '';
+		if (parts.length > 1) {
+			// In email addresses, only the domain name should be punycoded. Leave
+			// the local part (i.e. everything up to `@`) intact.
+			result = parts[0] + '@';
+			string = parts[1];
+		}
+		// Avoid `split(regex)` for IE8 compatibility. See #17.
+		string = string.replace(regexSeparators, '\x2E');
+		var labels = string.split('.');
+		var encoded = map(labels, fn).join('.');
+		return result + encoded;
+	}
+
+	/**
+	 * Creates an array containing the numeric code points of each Unicode
+	 * character in the string. While JavaScript uses UCS-2 internally,
+	 * this function will convert a pair of surrogate halves (each of which
+	 * UCS-2 exposes as separate characters) into a single code point,
+	 * matching UTF-16.
+	 * @see `punycode.ucs2.encode`
+	 * @see <https://mathiasbynens.be/notes/javascript-encoding>
+	 * @memberOf punycode.ucs2
+	 * @name decode
+	 * @param {String} string The Unicode input string (UCS-2).
+	 * @returns {Array} The new array of code points.
+	 */
+	function ucs2decode(string) {
+		var output = [],
+		    counter = 0,
+		    length = string.length,
+		    value,
+		    extra;
+		while (counter < length) {
+			value = string.charCodeAt(counter++);
+			if (value >= 0xD800 && value <= 0xDBFF && counter < length) {
+				// high surrogate, and there is a next character
+				extra = string.charCodeAt(counter++);
+				if ((extra & 0xFC00) == 0xDC00) { // low surrogate
+					output.push(((value & 0x3FF) << 10) + (extra & 0x3FF) + 0x10000);
+				} else {
+					// unmatched surrogate; only append this code unit, in case the next
+					// code unit is the high surrogate of a surrogate pair
+					output.push(value);
+					counter--;
+				}
+			} else {
+				output.push(value);
+			}
+		}
+		return output;
+	}
+
+	/**
+	 * Creates a string based on an array of numeric code points.
+	 * @see `punycode.ucs2.decode`
+	 * @memberOf punycode.ucs2
+	 * @name encode
+	 * @param {Array} codePoints The array of numeric code points.
+	 * @returns {String} The new Unicode string (UCS-2).
+	 */
+	function ucs2encode(array) {
+		return map(array, function(value) {
+			var output = '';
+			if (value > 0xFFFF) {
+				value -= 0x10000;
+				output += stringFromCharCode(value >>> 10 & 0x3FF | 0xD800);
+				value = 0xDC00 | value & 0x3FF;
+			}
+			output += stringFromCharCode(value);
+			return output;
+		}).join('');
+	}
+
+	/**
+	 * Converts a basic code point into a digit/integer.
+	 * @see `digitToBasic()`
+	 * @private
+	 * @param {Number} codePoint The basic numeric code point value.
+	 * @returns {Number} The numeric value of a basic code point (for use in
+	 * representing integers) in the range `0` to `base - 1`, or `base` if
+	 * the code point does not represent a value.
+	 */
+	function basicToDigit(codePoint) {
+		if (codePoint - 48 < 10) {
+			return codePoint - 22;
+		}
+		if (codePoint - 65 < 26) {
+			return codePoint - 65;
+		}
+		if (codePoint - 97 < 26) {
+			return codePoint - 97;
+		}
+		return base;
+	}
+
+	/**
+	 * Converts a digit/integer into a basic code point.
+	 * @see `basicToDigit()`
+	 * @private
+	 * @param {Number} digit The numeric value of a basic code point.
+	 * @returns {Number} The basic code point whose value (when used for
+	 * representing integers) is `digit`, which needs to be in the range
+	 * `0` to `base - 1`. If `flag` is non-zero, the uppercase form is
+	 * used; else, the lowercase form is used. The behavior is undefined
+	 * if `flag` is non-zero and `digit` has no uppercase form.
+	 */
+	function digitToBasic(digit, flag) {
+		//  0..25 map to ASCII a..z or A..Z
+		// 26..35 map to ASCII 0..9
+		return digit + 22 + 75 * (digit < 26) - ((flag != 0) << 5);
+	}
+
+	/**
+	 * Bias adaptation function as per section 3.4 of RFC 3492.
+	 * https://tools.ietf.org/html/rfc3492#section-3.4
+	 * @private
+	 */
+	function adapt(delta, numPoints, firstTime) {
+		var k = 0;
+		delta = firstTime ? floor(delta / damp) : delta >> 1;
+		delta += floor(delta / numPoints);
+		for (/* no initialization */; delta > baseMinusTMin * tMax >> 1; k += base) {
+			delta = floor(delta / baseMinusTMin);
+		}
+		return floor(k + (baseMinusTMin + 1) * delta / (delta + skew));
+	}
+
+	/**
+	 * Converts a Punycode string of ASCII-only symbols to a string of Unicode
+	 * symbols.
+	 * @memberOf punycode
+	 * @param {String} input The Punycode string of ASCII-only symbols.
+	 * @returns {String} The resulting string of Unicode symbols.
+	 */
+	function decode(input) {
+		// Don't use UCS-2
+		var output = [],
+		    inputLength = input.length,
+		    out,
+		    i = 0,
+		    n = initialN,
+		    bias = initialBias,
+		    basic,
+		    j,
+		    index,
+		    oldi,
+		    w,
+		    k,
+		    digit,
+		    t,
+		    /** Cached calculation results */
+		    baseMinusT;
+
+		// Handle the basic code points: let `basic` be the number of input code
+		// points before the last delimiter, or `0` if there is none, then copy
+		// the first basic code points to the output.
+
+		basic = input.lastIndexOf(delimiter);
+		if (basic < 0) {
+			basic = 0;
+		}
+
+		for (j = 0; j < basic; ++j) {
+			// if it's not a basic code point
+			if (input.charCodeAt(j) >= 0x80) {
+				error('not-basic');
+			}
+			output.push(input.charCodeAt(j));
+		}
+
+		// Main decoding loop: start just after the last delimiter if any basic code
+		// points were copied; start at the beginning otherwise.
+
+		for (index = basic > 0 ? basic + 1 : 0; index < inputLength; /* no final expression */) {
+
+			// `index` is the index of the next character to be consumed.
+			// Decode a generalized variable-length integer into `delta`,
+			// which gets added to `i`. The overflow checking is easier
+			// if we increase `i` as we go, then subtract off its starting
+			// value at the end to obtain `delta`.
+			for (oldi = i, w = 1, k = base; /* no condition */; k += base) {
+
+				if (index >= inputLength) {
+					error('invalid-input');
+				}
+
+				digit = basicToDigit(input.charCodeAt(index++));
+
+				if (digit >= base || digit > floor((maxInt - i) / w)) {
+					error('overflow');
+				}
+
+				i += digit * w;
+				t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
+
+				if (digit < t) {
+					break;
+				}
+
+				baseMinusT = base - t;
+				if (w > floor(maxInt / baseMinusT)) {
+					error('overflow');
+				}
+
+				w *= baseMinusT;
+
+			}
+
+			out = output.length + 1;
+			bias = adapt(i - oldi, out, oldi == 0);
+
+			// `i` was supposed to wrap around from `out` to `0`,
+			// incrementing `n` each time, so we'll fix that now:
+			if (floor(i / out) > maxInt - n) {
+				error('overflow');
+			}
+
+			n += floor(i / out);
+			i %= out;
+
+			// Insert `n` at position `i` of the output
+			output.splice(i++, 0, n);
+
+		}
+
+		return ucs2encode(output);
+	}
+
+	/**
+	 * Converts a string of Unicode symbols (e.g. a domain name label) to a
+	 * Punycode string of ASCII-only symbols.
+	 * @memberOf punycode
+	 * @param {String} input The string of Unicode symbols.
+	 * @returns {String} The resulting Punycode string of ASCII-only symbols.
+	 */
+	function encode(input) {
+		var n,
+		    delta,
+		    handledCPCount,
+		    basicLength,
+		    bias,
+		    j,
+		    m,
+		    q,
+		    k,
+		    t,
+		    currentValue,
+		    output = [],
+		    /** `inputLength` will hold the number of code points in `input`. */
+		    inputLength,
+		    /** Cached calculation results */
+		    handledCPCountPlusOne,
+		    baseMinusT,
+		    qMinusT;
+
+		// Convert the input in UCS-2 to Unicode
+		input = ucs2decode(input);
+
+		// Cache the length
+		inputLength = input.length;
+
+		// Initialize the state
+		n = initialN;
+		delta = 0;
+		bias = initialBias;
+
+		// Handle the basic code points
+		for (j = 0; j < inputLength; ++j) {
+			currentValue = input[j];
+			if (currentValue < 0x80) {
+				output.push(stringFromCharCode(currentValue));
+			}
+		}
+
+		handledCPCount = basicLength = output.length;
+
+		// `handledCPCount` is the number of code points that have been handled;
+		// `basicLength` is the number of basic code points.
+
+		// Finish the basic string - if it is not empty - with a delimiter
+		if (basicLength) {
+			output.push(delimiter);
+		}
+
+		// Main encoding loop:
+		while (handledCPCount < inputLength) {
+
+			// All non-basic code points < n have been handled already. Find the next
+			// larger one:
+			for (m = maxInt, j = 0; j < inputLength; ++j) {
+				currentValue = input[j];
+				if (currentValue >= n && currentValue < m) {
+					m = currentValue;
+				}
+			}
+
+			// Increase `delta` enough to advance the decoder's <n,i> state to <m,0>,
+			// but guard against overflow
+			handledCPCountPlusOne = handledCPCount + 1;
+			if (m - n > floor((maxInt - delta) / handledCPCountPlusOne)) {
+				error('overflow');
+			}
+
+			delta += (m - n) * handledCPCountPlusOne;
+			n = m;
+
+			for (j = 0; j < inputLength; ++j) {
+				currentValue = input[j];
+
+				if (currentValue < n && ++delta > maxInt) {
+					error('overflow');
+				}
+
+				if (currentValue == n) {
+					// Represent delta as a generalized variable-length integer
+					for (q = delta, k = base; /* no condition */; k += base) {
+						t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
+						if (q < t) {
+							break;
+						}
+						qMinusT = q - t;
+						baseMinusT = base - t;
+						output.push(
+							stringFromCharCode(digitToBasic(t + qMinusT % baseMinusT, 0))
+						);
+						q = floor(qMinusT / baseMinusT);
+					}
+
+					output.push(stringFromCharCode(digitToBasic(q, 0)));
+					bias = adapt(delta, handledCPCountPlusOne, handledCPCount == basicLength);
+					delta = 0;
+					++handledCPCount;
+				}
+			}
+
+			++delta;
+			++n;
+
+		}
+		return output.join('');
+	}
+
+	/**
+	 * Converts a Punycode string representing a domain name or an email address
+	 * to Unicode. Only the Punycoded parts of the input will be converted, i.e.
+	 * it doesn't matter if you call it on a string that has already been
+	 * converted to Unicode.
+	 * @memberOf punycode
+	 * @param {String} input The Punycoded domain name or email address to
+	 * convert to Unicode.
+	 * @returns {String} The Unicode representation of the given Punycode
+	 * string.
+	 */
+	function toUnicode(input) {
+		return mapDomain(input, function(string) {
+			return regexPunycode.test(string)
+				? decode(string.slice(4).toLowerCase())
+				: string;
+		});
+	}
+
+	/**
+	 * Converts a Unicode string representing a domain name or an email address to
+	 * Punycode. Only the non-ASCII parts of the domain name will be converted,
+	 * i.e. it doesn't matter if you call it with a domain that's already in
+	 * ASCII.
+	 * @memberOf punycode
+	 * @param {String} input The domain name or email address to convert, as a
+	 * Unicode string.
+	 * @returns {String} The Punycode representation of the given domain name or
+	 * email address.
+	 */
+	function toASCII(input) {
+		return mapDomain(input, function(string) {
+			return regexNonASCII.test(string)
+				? 'xn--' + encode(string)
+				: string;
+		});
+	}
+
+	/*--------------------------------------------------------------------------*/
+
+	/** Define the public API */
+	punycode = {
+		/**
+		 * A string representing the current Punycode.js version number.
+		 * @memberOf punycode
+		 * @type String
+		 */
+		'version': '1.4.1',
+		/**
+		 * An object of methods to convert from JavaScript's internal character
+		 * representation (UCS-2) to Unicode code points, and back.
+		 * @see <https://mathiasbynens.be/notes/javascript-encoding>
+		 * @memberOf punycode
+		 * @type Object
+		 */
+		'ucs2': {
+			'decode': ucs2decode,
+			'encode': ucs2encode
+		},
+		'decode': decode,
+		'encode': encode,
+		'toASCII': toASCII,
+		'toUnicode': toUnicode
+	};
+
+	/** Expose `punycode` */
+	// Some AMD build optimizers, like r.js, check for specific condition patterns
+	// like the following:
+	if (
+		typeof define == 'function' &&
+		typeof define.amd == 'object' &&
+		define.amd
+	) {
+		define('punycode', function() {
+			return punycode;
+		});
+	} else if (freeExports && freeModule) {
+		if (module.exports == freeExports) {
+			// in Node.js, io.js, or RingoJS v0.8.0+
+			freeModule.exports = punycode;
+		} else {
+			// in Narwhal or RingoJS v0.7.0-
+			for (key in punycode) {
+				punycode.hasOwnProperty(key) && (freeExports[key] = punycode[key]);
+			}
+		}
+	} else {
+		// in Rhino or a web browser
+		root.punycode = punycode;
+	}
+
+}(this));
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],4:[function(require,module,exports){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 'use strict';
 
-const u = require('./src/index.js');
-
-const R = require( 'ramda');
-
-
-const merge = (Robj, uObj) => {
-
-    let RPairs = R.toPairs( Robj );
-    let uPairs = R.toPairs( uObj );
-
-    let RuPairs = R.concat( RPairs, uPairs );
-
-    let RuObj = R.fromPairs( RuPairs );
-
-    return RuObj;
+// If obj.hasOwnProperty has been overridden, then calling
+// obj.hasOwnProperty(prop) will break.
+// See: https://github.com/joyent/node/issues/1707
+function hasOwnProperty(obj, prop) {
+  return Object.prototype.hasOwnProperty.call(obj, prop);
 }
 
+module.exports = function(qs, sep, eq, options) {
+  sep = sep || '&';
+  eq = eq || '=';
+  var obj = {};
 
-const Ru = R.merge( R, u );
+  if (typeof qs !== 'string' || qs.length === 0) {
+    return obj;
+  }
 
-module.exports = Ru;
+  var regexp = /\+/g;
+  qs = qs.split(sep);
 
-},{"./src/index.js":3,"ramda":12}],3:[function(require,module,exports){
+  var maxKeys = 1000;
+  if (options && typeof options.maxKeys === 'number') {
+    maxKeys = options.maxKeys;
+  }
+
+  var len = qs.length;
+  // maxKeys <= 0 means that we should not limit keys count
+  if (maxKeys > 0 && len > maxKeys) {
+    len = maxKeys;
+  }
+
+  for (var i = 0; i < len; ++i) {
+    var x = qs[i].replace(regexp, '%20'),
+        idx = x.indexOf(eq),
+        kstr, vstr, k, v;
+
+    if (idx >= 0) {
+      kstr = x.substr(0, idx);
+      vstr = x.substr(idx + 1);
+    } else {
+      kstr = x;
+      vstr = '';
+    }
+
+    k = decodeURIComponent(kstr);
+    v = decodeURIComponent(vstr);
+
+    if (!hasOwnProperty(obj, k)) {
+      obj[k] = v;
+    } else if (isArray(obj[k])) {
+      obj[k].push(v);
+    } else {
+      obj[k] = [obj[k], v];
+    }
+  }
+
+  return obj;
+};
+
+var isArray = Array.isArray || function (xs) {
+  return Object.prototype.toString.call(xs) === '[object Array]';
+};
+
+},{}],5:[function(require,module,exports){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 'use strict';
 
-const R = require('ramda');
-const _ = require('lodash');
-
-
-
-
-const decorate = (...rest) => {
-
-  let decorators = R.init(rest);
-  let fnToDecorate = R.last(rest);
-
-  return R.compose( ...decorators )( fnToDecorate );
-}
-
-
-
-
-
-const mapKeys = R.curry( (f,obj) =>  {
-
-    const rFn = (obj,[k,v]) =>  R.assoc( f(k) ,v,obj);
-
-    let kvPairs = R.toPairs( obj );
-
-    return R.reduce( rFn,  {} ,kvPairs )
-})
-
-
-
-const camelCaseKeys = mapKeys( _.camelCase )
-
-const snakeCaseKeys = mapKeys( _.snakeCase )
-
-
-
-
-
-
-
-const parseJSON = R.curry( (keysToParse, obj) => {
-
-    let keysInObjToParse = R.intersection( R.keys(obj), keysToParse );
-
-    let newObj = R.reduce( (newObj, key) => {
-
-        return R.assoc(key, JSON.parse(obj[key]), newObj)
-
-    }, {}, keysInObjToParse )
-
-
-    return R.merge(obj, newObj)
-})
-
-
-
-
-
-
-
-
-const isNotNil = R.complement( R.isNil );
-
-
-
-
-
-
-
-const rename = R.curry( ( oldName, newName, obj ) => {
-
-    if(R.isNil(obj)){
-        return null
-    }
-
-
-    const process = R.pipe(
-        R.prop( oldName ),
-        R.tap( console.log ),
-        R.assoc( newName, R.__, obj ),
-        R.omit([oldName])
-    );
-
-    return process( obj );
-})
-
-
-const renameAll = R.curry( (namesArr, obj) => {
-
-    const rFn = (obj, [oldName, newName]) => rename( oldName, newName, obj );
-
-    return R.reduce( rFn, obj, namesArr);
-})
-
-
-
-
-const splitWithArr = function splitWithArr(splitNumbers, xs){
-
-    if( R.isEmpty( splitNumbers ) ){
-        return [];
-    }
-
-    let [ n, ...splitNumbersNext ] = splitNumbers;
-
-    let [ xsSplitL, xsSplitR ] = R.splitAt( n, xs );
-
-    return [ xsSplitL, ...splitWithArr(splitNumbersNext,  xsSplitR ) ]
-}
-
-
-const omitBy = R.curry( (p,obj) =>  {
-
-    const rFn = (obj,[k,v]) => p(v,k) ? obj : R.assoc(k,v,obj);
-
-    let kvPairs = R.toPairs( obj );
-
-    return R.reduce( rFn,  {} ,kvPairs )
-})
-
-
-
-
-
-
-const isUpperCase = R.chain( R.equals, R.toUpper );
-const isLowerCase = R.chain( R.equals, R.toLower );
-
-const isEmptyString = R.both( R.is(String), R.isEmpty );
-
-
-
-
-
-const preserveOrderBy = R.curry( ( fn , ids, objs) => {
-
-    const objsIndexedByFn = R.indexBy( fn, objs );
-
-
-    return R.map( R.prop(R.__, objsIndexedByFn ) ,  ids )
-})
-
-
-const preserveOrderByIds = preserveOrderBy( R.prop('id') );
-
-
-
-
-const preserveGroupOrderBy = R.curry( ( fn , ids, objs) => {
-
-    const objsGroupedByFn = R.groupBy( fn, objs );
-
-    return R.map( id =>  objsGroupedByFn[ id ] || [] ,  ids )
-});
-
-
-
-
-const lookupFrom = R.flip( R.prop );
-
-
-
-const preserveListStructureBy = R.curry( (fn, ks, objs) => {
-
-    let objsIndexedByFn = R.indexBy( fn, objs );
-
-    const go = function go( term ){
-
-        if( R.isNil( term ) ){
-            return null
-        }
-
-        if( R.is( Array, term ) ){
-            return R.map( go, term )
-        }
-
-        return objsIndexedByFn[ term ]
-    }
-
-    return go( ks );
-} )
-
-const preserveListStructureByIds = preserveListStructureBy( R.prop('id') )
-
-
-
-const preserveListStructureGroupedBy = R.curry( (fn, ks, objs) => {
-
-    let objsGroupedByFn = R.groupBy( fn, objs );
-
-    const go = function go( term ){
-
-        if( R.isNil( term ) ){
-            return null
-        }
-
-        if( R.is( Array, term ) ){
-            return R.map( go, term )
-        }
-
-        return objsGroupedByFn[ term ]
-    }
-
-    return go( ks );
-} )
-
-const preserveListStructureGroupedByIds = preserveListStructureGroupedBy( R.prop('id') )
-
-
-
-
-const flattenAndCleanIds = R.pipe(
-    R.flatten,
-    R.uniq,
-    R.reject( R.isNil )
-)
-
-
-
-const zipAllWith = R.curry( (f, xss) => {
-
-    const fFixArity = R.apply( f );
-
-    const go = R.pipe(
-        R.transpose,
-        R.map( fFixArity )
-    );
-
-    return go( xss )
-});
-
-
-const concatAll = R.reduce( R.concat, [] );
-
-
-const indexesFromList = R.lift( R.times( R.identity ) )( R.length );
-
-
-
-const defaultObjTo = R.mergeWith( R.defaultTo );
-
-
-
-
-
-const _sortingMappingChaining = R.curry( R.pipe(
-    R.zipWith( R.flip( R.pair) ),
-    R.fromPairs
-))
-
-const _mkSortingMapping = R.chain( _sortingMappingChaining, indexesFromList  );
-
-
-
-const sortUsing = R.curry( (fn, orderList) => {
-
-    const sortingMapping = _mkSortingMapping( orderList );
-    const lookupFromSortingMapping = lookupFrom( sortingMapping );
-
-    const sortingFn = R.pipe(
-        fn,
-        lookupFromSortingMapping
-    )
-
-    return R.sortBy( sortingFn );
-})
-
-
-
-const inside = R.flip( R.contains );
-
-
-const propInside = R.curry( (k, list, obj) => {
-
-    let prop = R.prop(k, obj);
-    return inside(list, prop);
-} );
-
-
-
-
-const toCapitalCase = R.pipe(
-    R.toLower,
-    R.lift( R.concat )(R.compose( R.toUpper, R.head), R.tail)
-);
-
-const toCapitalCaseEachWord = R.pipe(
-    R.split(' '),
-    R.map( toCapitalCase ),
-    R.join(' ')
-);
-
-
-const isNotArray = R.complement( R.is( Array ) );
-
-
-const isPlainObj = R.both(
-   isNotArray,
-   R.is( Object )
-)
-
-
-
-
-const deepMergeWith = R.curry( (f, objX, objY) => {
-
-  const _deepMerge = function _deepMerge( objX, objY){
-
-      if( isPlainObj( objX ) && isPlainObj( objY ) ){
-
-         return R.mergeWith( _deepMerge, objX, objY )
+var stringifyPrimitive = function(v) {
+  switch (typeof v) {
+    case 'string':
+      return v;
+
+    case 'boolean':
+      return v ? 'true' : 'false';
+
+    case 'number':
+      return isFinite(v) ? v : '';
+
+    default:
+      return '';
+  }
+};
+
+module.exports = function(obj, sep, eq, name) {
+  sep = sep || '&';
+  eq = eq || '=';
+  if (obj === null) {
+    obj = undefined;
+  }
+
+  if (typeof obj === 'object') {
+    return map(objectKeys(obj), function(k) {
+      var ks = encodeURIComponent(stringifyPrimitive(k)) + eq;
+      if (isArray(obj[k])) {
+        return map(obj[k], function(v) {
+          return ks + encodeURIComponent(stringifyPrimitive(v));
+        }).join(sep);
+      } else {
+        return ks + encodeURIComponent(stringifyPrimitive(obj[k]));
       }
+    }).join(sep);
 
-      return f( objX, objY )
-  };
+  }
 
-  return R.mergeWith( _deepMerge, objX, objY  )
-} );
+  if (!name) return '';
+  return encodeURIComponent(stringifyPrimitive(name)) + eq +
+         encodeURIComponent(stringifyPrimitive(obj));
+};
+
+var isArray = Array.isArray || function (xs) {
+  return Object.prototype.toString.call(xs) === '[object Array]';
+};
+
+function map (xs, f) {
+  if (xs.map) return xs.map(f);
+  var res = [];
+  for (var i = 0; i < xs.length; i++) {
+    res.push(f(xs[i], i));
+  }
+  return res;
+}
+
+var objectKeys = Object.keys || function (obj) {
+  var res = [];
+  for (var key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) res.push(key);
+  }
+  return res;
+};
+
+},{}],6:[function(require,module,exports){
+'use strict';
+
+exports.decode = exports.parse = require('./decode');
+exports.encode = exports.stringify = require('./encode');
+
+},{"./decode":4,"./encode":5}],7:[function(require,module,exports){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+'use strict';
+
+var punycode = require('punycode');
+var util = require('./util');
+
+exports.parse = urlParse;
+exports.resolve = urlResolve;
+exports.resolveObject = urlResolveObject;
+exports.format = urlFormat;
+
+exports.Url = Url;
+
+function Url() {
+  this.protocol = null;
+  this.slashes = null;
+  this.auth = null;
+  this.host = null;
+  this.port = null;
+  this.hostname = null;
+  this.hash = null;
+  this.search = null;
+  this.query = null;
+  this.pathname = null;
+  this.path = null;
+  this.href = null;
+}
+
+// Reference: RFC 3986, RFC 1808, RFC 2396
+
+// define these here so at least they only have to be
+// compiled once on the first module load.
+var protocolPattern = /^([a-z0-9.+-]+:)/i,
+    portPattern = /:[0-9]*$/,
+
+    // Special case for a simple path URL
+    simplePathPattern = /^(\/\/?(?!\/)[^\?\s]*)(\?[^\s]*)?$/,
+
+    // RFC 2396: characters reserved for delimiting URLs.
+    // We actually just auto-escape these.
+    delims = ['<', '>', '"', '`', ' ', '\r', '\n', '\t'],
+
+    // RFC 2396: characters not allowed for various reasons.
+    unwise = ['{', '}', '|', '\\', '^', '`'].concat(delims),
+
+    // Allowed by RFCs, but cause of XSS attacks.  Always escape these.
+    autoEscape = ['\''].concat(unwise),
+    // Characters that are never ever allowed in a hostname.
+    // Note that any invalid chars are also handled, but these
+    // are the ones that are *expected* to be seen, so we fast-path
+    // them.
+    nonHostChars = ['%', '/', '?', ';', '#'].concat(autoEscape),
+    hostEndingChars = ['/', '?', '#'],
+    hostnameMaxLen = 255,
+    hostnamePartPattern = /^[+a-z0-9A-Z_-]{0,63}$/,
+    hostnamePartStart = /^([+a-z0-9A-Z_-]{0,63})(.*)$/,
+    // protocols that can allow "unsafe" and "unwise" chars.
+    unsafeProtocol = {
+      'javascript': true,
+      'javascript:': true
+    },
+    // protocols that never have a hostname.
+    hostlessProtocol = {
+      'javascript': true,
+      'javascript:': true
+    },
+    // protocols that always contain a // bit.
+    slashedProtocol = {
+      'http': true,
+      'https': true,
+      'ftp': true,
+      'gopher': true,
+      'file': true,
+      'http:': true,
+      'https:': true,
+      'ftp:': true,
+      'gopher:': true,
+      'file:': true
+    },
+    querystring = require('querystring');
+
+function urlParse(url, parseQueryString, slashesDenoteHost) {
+  if (url && util.isObject(url) && url instanceof Url) return url;
+
+  var u = new Url;
+  u.parse(url, parseQueryString, slashesDenoteHost);
+  return u;
+}
+
+Url.prototype.parse = function(url, parseQueryString, slashesDenoteHost) {
+  if (!util.isString(url)) {
+    throw new TypeError("Parameter 'url' must be a string, not " + typeof url);
+  }
+
+  // Copy chrome, IE, opera backslash-handling behavior.
+  // Back slashes before the query string get converted to forward slashes
+  // See: https://code.google.com/p/chromium/issues/detail?id=25916
+  var queryIndex = url.indexOf('?'),
+      splitter =
+          (queryIndex !== -1 && queryIndex < url.indexOf('#')) ? '?' : '#',
+      uSplit = url.split(splitter),
+      slashRegex = /\\/g;
+  uSplit[0] = uSplit[0].replace(slashRegex, '/');
+  url = uSplit.join(splitter);
+
+  var rest = url;
+
+  // trim before proceeding.
+  // This is to support parse stuff like "  http://foo.com  \n"
+  rest = rest.trim();
+
+  if (!slashesDenoteHost && url.split('#').length === 1) {
+    // Try fast path regexp
+    var simplePath = simplePathPattern.exec(rest);
+    if (simplePath) {
+      this.path = rest;
+      this.href = rest;
+      this.pathname = simplePath[1];
+      if (simplePath[2]) {
+        this.search = simplePath[2];
+        if (parseQueryString) {
+          this.query = querystring.parse(this.search.substr(1));
+        } else {
+          this.query = this.search.substr(1);
+        }
+      } else if (parseQueryString) {
+        this.search = '';
+        this.query = {};
+      }
+      return this;
+    }
+  }
+
+  var proto = protocolPattern.exec(rest);
+  if (proto) {
+    proto = proto[0];
+    var lowerProto = proto.toLowerCase();
+    this.protocol = lowerProto;
+    rest = rest.substr(proto.length);
+  }
+
+  // figure out if it's got a host
+  // user@server is *always* interpreted as a hostname, and url
+  // resolution will treat //foo/bar as host=foo,path=bar because that's
+  // how the browser resolves relative URLs.
+  if (slashesDenoteHost || proto || rest.match(/^\/\/[^@\/]+@[^@\/]+/)) {
+    var slashes = rest.substr(0, 2) === '//';
+    if (slashes && !(proto && hostlessProtocol[proto])) {
+      rest = rest.substr(2);
+      this.slashes = true;
+    }
+  }
+
+  if (!hostlessProtocol[proto] &&
+      (slashes || (proto && !slashedProtocol[proto]))) {
+
+    // there's a hostname.
+    // the first instance of /, ?, ;, or # ends the host.
+    //
+    // If there is an @ in the hostname, then non-host chars *are* allowed
+    // to the left of the last @ sign, unless some host-ending character
+    // comes *before* the @-sign.
+    // URLs are obnoxious.
+    //
+    // ex:
+    // http://a@b@c/ => user:a@b host:c
+    // http://a@b?@c => user:a host:c path:/?@c
+
+    // v0.12 TODO(isaacs): This is not quite how Chrome does things.
+    // Review our test case against browsers more comprehensively.
+
+    // find the first instance of any hostEndingChars
+    var hostEnd = -1;
+    for (var i = 0; i < hostEndingChars.length; i++) {
+      var hec = rest.indexOf(hostEndingChars[i]);
+      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd))
+        hostEnd = hec;
+    }
+
+    // at this point, either we have an explicit point where the
+    // auth portion cannot go past, or the last @ char is the decider.
+    var auth, atSign;
+    if (hostEnd === -1) {
+      // atSign can be anywhere.
+      atSign = rest.lastIndexOf('@');
+    } else {
+      // atSign must be in auth portion.
+      // http://a@b/c@d => host:b auth:a path:/c@d
+      atSign = rest.lastIndexOf('@', hostEnd);
+    }
+
+    // Now we have a portion which is definitely the auth.
+    // Pull that off.
+    if (atSign !== -1) {
+      auth = rest.slice(0, atSign);
+      rest = rest.slice(atSign + 1);
+      this.auth = decodeURIComponent(auth);
+    }
+
+    // the host is the remaining to the left of the first non-host char
+    hostEnd = -1;
+    for (var i = 0; i < nonHostChars.length; i++) {
+      var hec = rest.indexOf(nonHostChars[i]);
+      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd))
+        hostEnd = hec;
+    }
+    // if we still have not hit it, then the entire thing is a host.
+    if (hostEnd === -1)
+      hostEnd = rest.length;
+
+    this.host = rest.slice(0, hostEnd);
+    rest = rest.slice(hostEnd);
+
+    // pull out port.
+    this.parseHost();
+
+    // we've indicated that there is a hostname,
+    // so even if it's empty, it has to be present.
+    this.hostname = this.hostname || '';
+
+    // if hostname begins with [ and ends with ]
+    // assume that it's an IPv6 address.
+    var ipv6Hostname = this.hostname[0] === '[' &&
+        this.hostname[this.hostname.length - 1] === ']';
+
+    // validate a little.
+    if (!ipv6Hostname) {
+      var hostparts = this.hostname.split(/\./);
+      for (var i = 0, l = hostparts.length; i < l; i++) {
+        var part = hostparts[i];
+        if (!part) continue;
+        if (!part.match(hostnamePartPattern)) {
+          var newpart = '';
+          for (var j = 0, k = part.length; j < k; j++) {
+            if (part.charCodeAt(j) > 127) {
+              // we replace non-ASCII char with a temporary placeholder
+              // we need this to make sure size of hostname is not
+              // broken by replacing non-ASCII by nothing
+              newpart += 'x';
+            } else {
+              newpart += part[j];
+            }
+          }
+          // we test again with ASCII char only
+          if (!newpart.match(hostnamePartPattern)) {
+            var validParts = hostparts.slice(0, i);
+            var notHost = hostparts.slice(i + 1);
+            var bit = part.match(hostnamePartStart);
+            if (bit) {
+              validParts.push(bit[1]);
+              notHost.unshift(bit[2]);
+            }
+            if (notHost.length) {
+              rest = '/' + notHost.join('.') + rest;
+            }
+            this.hostname = validParts.join('.');
+            break;
+          }
+        }
+      }
+    }
+
+    if (this.hostname.length > hostnameMaxLen) {
+      this.hostname = '';
+    } else {
+      // hostnames are always lower case.
+      this.hostname = this.hostname.toLowerCase();
+    }
+
+    if (!ipv6Hostname) {
+      // IDNA Support: Returns a punycoded representation of "domain".
+      // It only converts parts of the domain name that
+      // have non-ASCII characters, i.e. it doesn't matter if
+      // you call it with a domain that already is ASCII-only.
+      this.hostname = punycode.toASCII(this.hostname);
+    }
+
+    var p = this.port ? ':' + this.port : '';
+    var h = this.hostname || '';
+    this.host = h + p;
+    this.href += this.host;
+
+    // strip [ and ] from the hostname
+    // the host field still retains them, though
+    if (ipv6Hostname) {
+      this.hostname = this.hostname.substr(1, this.hostname.length - 2);
+      if (rest[0] !== '/') {
+        rest = '/' + rest;
+      }
+    }
+  }
+
+  // now rest is set to the post-host stuff.
+  // chop off any delim chars.
+  if (!unsafeProtocol[lowerProto]) {
+
+    // First, make 100% sure that any "autoEscape" chars get
+    // escaped, even if encodeURIComponent doesn't think they
+    // need to be.
+    for (var i = 0, l = autoEscape.length; i < l; i++) {
+      var ae = autoEscape[i];
+      if (rest.indexOf(ae) === -1)
+        continue;
+      var esc = encodeURIComponent(ae);
+      if (esc === ae) {
+        esc = escape(ae);
+      }
+      rest = rest.split(ae).join(esc);
+    }
+  }
 
 
-const deepMerge = deepMergeWith( R.nthArg(1) )
+  // chop off from the tail first.
+  var hash = rest.indexOf('#');
+  if (hash !== -1) {
+    // got a fragment string.
+    this.hash = rest.substr(hash);
+    rest = rest.slice(0, hash);
+  }
+  var qm = rest.indexOf('?');
+  if (qm !== -1) {
+    this.search = rest.substr(qm);
+    this.query = rest.substr(qm + 1);
+    if (parseQueryString) {
+      this.query = querystring.parse(this.query);
+    }
+    rest = rest.slice(0, qm);
+  } else if (parseQueryString) {
+    // no query string, but parseQueryString still requested
+    this.search = '';
+    this.query = {};
+  }
+  if (rest) this.pathname = rest;
+  if (slashedProtocol[lowerProto] &&
+      this.hostname && !this.pathname) {
+    this.pathname = '/';
+  }
 
+  //to support http.request
+  if (this.pathname || this.search) {
+    var p = this.pathname || '';
+    var s = this.search || '';
+    this.path = p + s;
+  }
 
+  // finally, reconstruct the href based on what has been validated.
+  this.href = this.format();
+  return this;
+};
 
-const defaultDeepObjTo = deepMergeWith( R.defaultTo );
+// format a parsed object into a url string
+function urlFormat(obj) {
+  // ensure it's an object, and not a string url.
+  // If it's an obj, this is a no-op.
+  // this way, you can call url_format() on strings
+  // to clean up potentially wonky urls.
+  if (util.isString(obj)) obj = urlParse(obj);
+  if (!(obj instanceof Url)) return Url.prototype.format.call(obj);
+  return obj.format();
+}
 
+Url.prototype.format = function() {
+  var auth = this.auth || '';
+  if (auth) {
+    auth = encodeURIComponent(auth);
+    auth = auth.replace(/%3A/i, ':');
+    auth += '@';
+  }
 
+  var protocol = this.protocol || '',
+      pathname = this.pathname || '',
+      hash = this.hash || '',
+      host = false,
+      query = '';
 
+  if (this.host) {
+    host = auth + this.host;
+  } else if (this.hostname) {
+    host = auth + (this.hostname.indexOf(':') === -1 ?
+        this.hostname :
+        '[' + this.hostname + ']');
+    if (this.port) {
+      host += ':' + this.port;
+    }
+  }
 
+  if (this.query &&
+      util.isObject(this.query) &&
+      Object.keys(this.query).length) {
+    query = querystring.stringify(this.query);
+  }
 
-// alias
+  var search = this.search || (query && ('?' + query)) || '';
 
-const id = R.identity;
+  if (protocol && protocol.substr(-1) !== ':') protocol += ':';
 
-const compl = R.complement;
+  // only the slashedProtocols get the //.  Not mailto:, xmpp:, etc.
+  // unless they had them to begin with.
+  if (this.slashes ||
+      (!protocol || slashedProtocol[protocol]) && host !== false) {
+    host = '//' + (host || '');
+    if (pathname && pathname.charAt(0) !== '/') pathname = '/' + pathname;
+  } else if (!host) {
+    host = '';
+  }
 
+  if (hash && hash.charAt(0) !== '#') hash = '#' + hash;
+  if (search && search.charAt(0) !== '?') search = '?' + search;
 
+  pathname = pathname.replace(/[?#]/g, function(match) {
+    return encodeURIComponent(match);
+  });
+  search = search.replace('#', '%23');
+
+  return protocol + host + pathname + search + hash;
+};
+
+function urlResolve(source, relative) {
+  return urlParse(source, false, true).resolve(relative);
+}
+
+Url.prototype.resolve = function(relative) {
+  return this.resolveObject(urlParse(relative, false, true)).format();
+};
+
+function urlResolveObject(source, relative) {
+  if (!source) return relative;
+  return urlParse(source, false, true).resolveObject(relative);
+}
+
+Url.prototype.resolveObject = function(relative) {
+  if (util.isString(relative)) {
+    var rel = new Url();
+    rel.parse(relative, false, true);
+    relative = rel;
+  }
+
+  var result = new Url();
+  var tkeys = Object.keys(this);
+  for (var tk = 0; tk < tkeys.length; tk++) {
+    var tkey = tkeys[tk];
+    result[tkey] = this[tkey];
+  }
+
+  // hash is always overridden, no matter what.
+  // even href="" will remove it.
+  result.hash = relative.hash;
+
+  // if the relative url is empty, then there's nothing left to do here.
+  if (relative.href === '') {
+    result.href = result.format();
+    return result;
+  }
+
+  // hrefs like //foo/bar always cut to the protocol.
+  if (relative.slashes && !relative.protocol) {
+    // take everything except the protocol from relative
+    var rkeys = Object.keys(relative);
+    for (var rk = 0; rk < rkeys.length; rk++) {
+      var rkey = rkeys[rk];
+      if (rkey !== 'protocol')
+        result[rkey] = relative[rkey];
+    }
+
+    //urlParse appends trailing / to urls like http://www.example.com
+    if (slashedProtocol[result.protocol] &&
+        result.hostname && !result.pathname) {
+      result.path = result.pathname = '/';
+    }
+
+    result.href = result.format();
+    return result;
+  }
+
+  if (relative.protocol && relative.protocol !== result.protocol) {
+    // if it's a known url protocol, then changing
+    // the protocol does weird things
+    // first, if it's not file:, then we MUST have a host,
+    // and if there was a path
+    // to begin with, then we MUST have a path.
+    // if it is file:, then the host is dropped,
+    // because that's known to be hostless.
+    // anything else is assumed to be absolute.
+    if (!slashedProtocol[relative.protocol]) {
+      var keys = Object.keys(relative);
+      for (var v = 0; v < keys.length; v++) {
+        var k = keys[v];
+        result[k] = relative[k];
+      }
+      result.href = result.format();
+      return result;
+    }
+
+    result.protocol = relative.protocol;
+    if (!relative.host && !hostlessProtocol[relative.protocol]) {
+      var relPath = (relative.pathname || '').split('/');
+      while (relPath.length && !(relative.host = relPath.shift()));
+      if (!relative.host) relative.host = '';
+      if (!relative.hostname) relative.hostname = '';
+      if (relPath[0] !== '') relPath.unshift('');
+      if (relPath.length < 2) relPath.unshift('');
+      result.pathname = relPath.join('/');
+    } else {
+      result.pathname = relative.pathname;
+    }
+    result.search = relative.search;
+    result.query = relative.query;
+    result.host = relative.host || '';
+    result.auth = relative.auth;
+    result.hostname = relative.hostname || relative.host;
+    result.port = relative.port;
+    // to support http.request
+    if (result.pathname || result.search) {
+      var p = result.pathname || '';
+      var s = result.search || '';
+      result.path = p + s;
+    }
+    result.slashes = result.slashes || relative.slashes;
+    result.href = result.format();
+    return result;
+  }
+
+  var isSourceAbs = (result.pathname && result.pathname.charAt(0) === '/'),
+      isRelAbs = (
+          relative.host ||
+          relative.pathname && relative.pathname.charAt(0) === '/'
+      ),
+      mustEndAbs = (isRelAbs || isSourceAbs ||
+                    (result.host && relative.pathname)),
+      removeAllDots = mustEndAbs,
+      srcPath = result.pathname && result.pathname.split('/') || [],
+      relPath = relative.pathname && relative.pathname.split('/') || [],
+      psychotic = result.protocol && !slashedProtocol[result.protocol];
+
+  // if the url is a non-slashed url, then relative
+  // links like ../.. should be able
+  // to crawl up to the hostname, as well.  This is strange.
+  // result.protocol has already been set by now.
+  // Later on, put the first path part into the host field.
+  if (psychotic) {
+    result.hostname = '';
+    result.port = null;
+    if (result.host) {
+      if (srcPath[0] === '') srcPath[0] = result.host;
+      else srcPath.unshift(result.host);
+    }
+    result.host = '';
+    if (relative.protocol) {
+      relative.hostname = null;
+      relative.port = null;
+      if (relative.host) {
+        if (relPath[0] === '') relPath[0] = relative.host;
+        else relPath.unshift(relative.host);
+      }
+      relative.host = null;
+    }
+    mustEndAbs = mustEndAbs && (relPath[0] === '' || srcPath[0] === '');
+  }
+
+  if (isRelAbs) {
+    // it's absolute.
+    result.host = (relative.host || relative.host === '') ?
+                  relative.host : result.host;
+    result.hostname = (relative.hostname || relative.hostname === '') ?
+                      relative.hostname : result.hostname;
+    result.search = relative.search;
+    result.query = relative.query;
+    srcPath = relPath;
+    // fall through to the dot-handling below.
+  } else if (relPath.length) {
+    // it's relative
+    // throw away the existing file, and take the new path instead.
+    if (!srcPath) srcPath = [];
+    srcPath.pop();
+    srcPath = srcPath.concat(relPath);
+    result.search = relative.search;
+    result.query = relative.query;
+  } else if (!util.isNullOrUndefined(relative.search)) {
+    // just pull out the search.
+    // like href='?foo'.
+    // Put this after the other two cases because it simplifies the booleans
+    if (psychotic) {
+      result.hostname = result.host = srcPath.shift();
+      //occationaly the auth can get stuck only in host
+      //this especially happens in cases like
+      //url.resolveObject('mailto:local1@domain1', 'local2@domain2')
+      var authInHost = result.host && result.host.indexOf('@') > 0 ?
+                       result.host.split('@') : false;
+      if (authInHost) {
+        result.auth = authInHost.shift();
+        result.host = result.hostname = authInHost.shift();
+      }
+    }
+    result.search = relative.search;
+    result.query = relative.query;
+    //to support http.request
+    if (!util.isNull(result.pathname) || !util.isNull(result.search)) {
+      result.path = (result.pathname ? result.pathname : '') +
+                    (result.search ? result.search : '');
+    }
+    result.href = result.format();
+    return result;
+  }
+
+  if (!srcPath.length) {
+    // no path at all.  easy.
+    // we've already handled the other stuff above.
+    result.pathname = null;
+    //to support http.request
+    if (result.search) {
+      result.path = '/' + result.search;
+    } else {
+      result.path = null;
+    }
+    result.href = result.format();
+    return result;
+  }
+
+  // if a url ENDs in . or .., then it must get a trailing slash.
+  // however, if it ends in anything else non-slashy,
+  // then it must NOT get a trailing slash.
+  var last = srcPath.slice(-1)[0];
+  var hasTrailingSlash = (
+      (result.host || relative.host || srcPath.length > 1) &&
+      (last === '.' || last === '..') || last === '');
+
+  // strip single dots, resolve double dots to parent dir
+  // if the path tries to go above the root, `up` ends up > 0
+  var up = 0;
+  for (var i = srcPath.length; i >= 0; i--) {
+    last = srcPath[i];
+    if (last === '.') {
+      srcPath.splice(i, 1);
+    } else if (last === '..') {
+      srcPath.splice(i, 1);
+      up++;
+    } else if (up) {
+      srcPath.splice(i, 1);
+      up--;
+    }
+  }
+
+  // if the path is allowed to go above the root, restore leading ..s
+  if (!mustEndAbs && !removeAllDots) {
+    for (; up--; up) {
+      srcPath.unshift('..');
+    }
+  }
+
+  if (mustEndAbs && srcPath[0] !== '' &&
+      (!srcPath[0] || srcPath[0].charAt(0) !== '/')) {
+    srcPath.unshift('');
+  }
+
+  if (hasTrailingSlash && (srcPath.join('/').substr(-1) !== '/')) {
+    srcPath.push('');
+  }
+
+  var isAbsolute = srcPath[0] === '' ||
+      (srcPath[0] && srcPath[0].charAt(0) === '/');
+
+  // put the host back
+  if (psychotic) {
+    result.hostname = result.host = isAbsolute ? '' :
+                                    srcPath.length ? srcPath.shift() : '';
+    //occationaly the auth can get stuck only in host
+    //this especially happens in cases like
+    //url.resolveObject('mailto:local1@domain1', 'local2@domain2')
+    var authInHost = result.host && result.host.indexOf('@') > 0 ?
+                     result.host.split('@') : false;
+    if (authInHost) {
+      result.auth = authInHost.shift();
+      result.host = result.hostname = authInHost.shift();
+    }
+  }
+
+  mustEndAbs = mustEndAbs || (result.host && srcPath.length);
+
+  if (mustEndAbs && !isAbsolute) {
+    srcPath.unshift('');
+  }
+
+  if (!srcPath.length) {
+    result.pathname = null;
+    result.path = null;
+  } else {
+    result.pathname = srcPath.join('/');
+  }
+
+  //to support request.http
+  if (!util.isNull(result.pathname) || !util.isNull(result.search)) {
+    result.path = (result.pathname ? result.pathname : '') +
+                  (result.search ? result.search : '');
+  }
+  result.auth = relative.auth || result.auth;
+  result.slashes = result.slashes || relative.slashes;
+  result.href = result.format();
+  return result;
+};
+
+Url.prototype.parseHost = function() {
+  var host = this.host;
+  var port = portPattern.exec(host);
+  if (port) {
+    port = port[0];
+    if (port !== ':') {
+      this.port = port.substr(1);
+    }
+    host = host.substr(0, host.length - port.length);
+  }
+  if (host) this.hostname = host;
+};
+
+},{"./util":8,"punycode":3,"querystring":6}],8:[function(require,module,exports){
+'use strict';
 
 module.exports = {
-    decorate,
-    mapKeys,
-    camelCaseKeys,
-    snakeCaseKeys,
-    parseJSON,
-    isNotNil,
-    rename,
-    renameAll,
-    splitWithArr,
-    omitBy,
-    isUpperCase,
-    isLowerCase,
-    isEmptyString,
-    preserveOrderBy,
-    preserveOrderByIds,
-    preserveGroupOrderBy,
-    lookupFrom,
-    preserveListStructureBy,
-    preserveListStructureByIds,
-    preserveListStructureGroupedBy,
-    preserveListStructureGroupedByIds,
-    flattenAndCleanIds,
-    zipAllWith,
-    concatAll,
-    indexesFromList,
-    defaultObjTo,
-    sortUsing,
-    inside,
-    propInside,
-    toCapitalCase,
-    toCapitalCaseEachWord,
-    isNotArray,
-    isPlainObj,
-    deepMergeWith,
-    deepMerge,
-    defaultDeepObjTo,
-    id,
-    compl,
-}
+  isString: function(arg) {
+    return typeof(arg) === 'string';
+  },
+  isObject: function(arg) {
+    return typeof(arg) === 'object' && arg !== null;
+  },
+  isNull: function(arg) {
+    return arg === null;
+  },
+  isNullOrUndefined: function(arg) {
+    return arg == null;
+  }
+};
 
-},{"lodash":10,"ramda":12}],4:[function(require,module,exports){
-$(() => {
+},{}],9:[function(require,module,exports){
+const initClient = () => {
     /*
         When sharla open
          * Login with userId to chat system -> to appear to other
@@ -609,9 +1673,9 @@ $(() => {
         Authentication process
 
      */
+    const deepstream = require('deepstream.io-client-js')
 
-
-    const Ru = require('./utils.js')
+    const Ru = require('../utils.js')
 
     const moment = require('moment')
 
@@ -622,27 +1686,32 @@ $(() => {
     let client = deepstream('127.0.0.1:6020')
 
 
-
-    const getChannelList = Ru.id
-
     const addNewMessage = Ru.curry((client, channel, msg) => {
+
         let msgToAdd = Ru.pickAll(['text', 'user', 'sentDate'], msg)
 
-        // Create message id
-        let msgId = client.getUid()
-        msgToAdd = Ru.assoc('id', msgId, msgToAdd)
+        client
+        .rpc
+        .make(
+            'message-create-id',
+            '',
+            (err, msgId) => {
+                msgToAdd = Ru.assoc('id', msgId, msgToAdd)
 
-        // create
-        let msgRecord = client.record.getRecord(msgId)
+                // create
+                let msgRecord = client.record.getRecord(msgId)
 
-        msgRecord.whenReady(msgRecord => {
+                msgRecord.whenReady(msgRecord => {
 
-            msgRecord.set(msgToAdd)
+                    msgRecord.set(msgToAdd)
 
-            channel.addEntry(msgId)
-        })
+                    channel.addEntry(msgId)
+                })
+            }
+        )
     })
 
+    // Temporary Will be replace
     const displayMsg = spec => {
         let {
             text,
@@ -651,13 +1720,15 @@ $(() => {
             id
         } = spec
 
-        $('#messages').append($('<li>').text(text))
+        let s = `${user}[${sentDate}]-said: ${text}`
+
+        $('#messages').append($('<li>').text(s))
     }
 
     const clearTextInput = () => $('#m').val('')
 
 
-    const processMsgRecord = msgRecord =>{
+    const processMsgRecord = msgRecord => {
         //Subscribe to message text [TODO: IMPROVEMENT FOR EDIT OPTION]
         // msgRecord.subscribe('text', Ru.log)
         const go = Ru.pipe(
@@ -670,52 +1741,17 @@ $(() => {
 
     const processMsgsRecord = Ru.forEach( processMsgRecord )
 
-    const displayUserStatus = (username, isLogged) => {
+    // Temporary, will be replaced
+    const displayUserStatus = Ru.curry((username, isLogged) => {
         console.log(username, isLogged)
-        let text = `${username} has left the chat`
+        let text = `${username} is offline`
 
         if (isLogged) {
             text = `${username}  has joined the chat`
         }
 
         $('#memberOnline').append($('<li>').text(text))
-    }
-
-
-    // TODO::: Doesn't work properly
-    // const loadMsgsF = Ru.curry((client, spec) => {
-    //     const loadMsg = id => {
-    //
-    //         const go = done => {
-    //             let msg = client.record.getRecord(id)
-    //
-    //             return msg.whenReady(done)
-    //         }
-    //
-    //         return (
-    //             F
-    //             .node(go)
-    //         )
-    //     }
-    //
-    //     let {
-    //         msgIds=[]
-    //     } = spec
-    //
-    //     let msgsF = Ru.map(loadMsg, msgIds)
-    //
-    //     return (
-    //         F
-    //         .parallel(Infinity, msgsF)
-    //     )
-    //
-    //     // load initial list
-    //     // myList = client.record.getList( 'super-long-list', { start: 2000, end: 2200 });
-    //
-    //     // change window
-    //     // myList.setOptions({ start: 2200, end: 2400 });
-    //
-    // })
+    })
 
 
     const loadMsgsC = Ru.curry((client, spec) => {
@@ -735,76 +1771,146 @@ $(() => {
     })
 
     // ################## When a chat conversation ####################
-    const startChatConversation = channelName => {
-        // [TODO] Get or create conversation list
-        let channel = client.record.getList(channelName)
+    const startChatConversation = Ru.curry((client, userId, friendId) => {
+        // Get channelId
+        client
+        .rpc
+        .make(
+            'channel-get-id',
+            {userId, friendId},
+            (err, channelId) => {
 
-        channel.whenReady(channel => {
-            // Load the conversation messages
-            let msgIdList  =  channel.getEntries()
+                if (err) {
+                    return Ru.log('Could not get the channel', err)
+                }
 
-            let conversationLength = Ru.length(msgIdList)
+                Ru.log('channelId::: ', channelId)
 
-            let oldMsgSpec = {
-                msgIds: msgIdList
-            }
+                // Subscribe to friend presence
+                let friendPresenceRecord = client.record.getRecord(`presence/${friendId}`)
 
-            loadMsgsC(client, oldMsgSpec)
+                friendPresenceRecord.whenReady(fpr => {
+                    fpr.subscribe('status', displayUserStatus(friendId))
+                })
 
-            // TODO:: event on send button
-            $('#s')
-            .on(
-                'click',
-                () =>  {
-                    let spec = {
-                        text: $('#m').val(),
-                        user: client.getUid(),
-                        sentDate: moment().format()
+                // Request the server to start updating friend status
+                client
+                .rpc
+                .make(
+                    'user-presence-status-subcription',
+                    friendId,
+                    (err, _) => {
+
+                        if (err) {
+                            return Ru.log('Could not request for user presence status order failed', err)
+                        }
+
+
+                        Ru.log('user-presence-status-subcription: ', _)
+
+                        let channel = client.record.getList(channelId)
+
+                        channel.whenReady(channel => {
+                            // Load the conversation messages
+                            let msgIdList  =  channel.getEntries()
+
+                            let oldMsgSpec = {
+                                msgIds: msgIdList
+                            }
+
+                            loadMsgsC(client, oldMsgSpec)
+
+                            // Temporary, will be replaced
+                            // TODO:: Submit button
+                            $('#s')
+                            .on(
+                                'click',
+                                () =>  {
+                                    let spec = {
+                                        text: $('#m').val(),
+                                        user: userId,
+                                        sentDate: moment().format()
+                                    }
+
+                                    addNewMessage(client, channel, spec)
+
+                                    // Temporary, will be removed
+                                    clearTextInput()
+
+                                    return false
+                                }
+                            )
+
+
+                            // subscribe client channel change
+                            channel.on('entry-added', msgId => {
+
+                                let spec = {
+                                    msgIds: [msgId]
+                                }
+
+                                loadMsgsC(client, spec)
+                            })
+                        })
                     }
-
-                    addNewMessage(client, channel, spec)
-
-                    clearTextInput()
-
-                    return false
-                }
-            )
+                )
 
 
-            // subscribe client channel change
-            channel.subscribe( msgIds => {
-                let newMsgIds = Ru.slice(conversationLength, Infinity, msgIds)
+            }
+        )
+    })
 
-                conversationLength = Ru.length(msgIds)
 
-                let spec = {
-                    msgIds: newMsgIds
-                }
-
-                loadMsgsC(client, spec)
-            })
-        })
-    }
-
-    const userLoggedIn = s => {
-
+    const openChatRoom = Ru.curry((client, user, s) => {
         console.log('user logIn: ', s)
 
-        // [TODO]subscribe to user presence to detect when he is online
-        client.presence.subscribe(displayUserStatus)
+        let {
+            username
+        } = user
+
+        client
+        .rpc
+        .make(
+            'user-check-existance',
+            username,
+            (err, alreadyExist) => {
+                if (err) {
+                    return Ru.log('Could not check user existance', err)
+                }
 
 
+                if (alreadyExist) {
+                    //TODO [load User info]
+                    return Ru.log(username, ' already exists')
+                }
 
-        // [TODO] [Load list of user channels]
-        let channelList = getChannelList()
+                // Create user account unless exist
+                client
+                .rpc
+                .make(
+                    'user-create-account',
+                    username,
+                    Ru.log
+                )
+            }
+        )
 
+        // Simulating user selecting chat conversation
+        $('#selectChat')
+        .on(
+            'click',
+            () => {
+                const friendname = $('#friendname').val()
 
-        // When user select channel to start a conversation
-        startChatConversation('channelSelected1')
-    }
+                startChatConversation(client, username, friendname)
 
+            }
+        )
 
-    $('#logIntoChat')
+    })
+
+    // Simulating user opening chat
+    $('#openChatRoom')
     .on(
         'click',
         () => {
@@ -817,14 +1923,24 @@ $(() => {
             console.log('user:: ', user)
 
             // Login
-            client.login(user, userLoggedIn)
+            client.login(user, openChatRoom(client, user))
 
             client.on('error', Ru.log)
         }
     )
-})
+}
 
-},{"./utils.js":323,"bluebird":5,"fluture":8,"moment":11}],5:[function(require,module,exports){
+$(initClient)
+
+/*
+    * if user go into chatRoom >>>>>>>>>> log into chat with {userName, and userId}
+        * Load user save info if already register or create new account
+    * If user leave the chatRoom >>>>>>>>> logout the chat
+    * When user start conversation >>>>>>>>> check if receiver status is online
+    * Data synchronization between sharla-app and sharla-chat
+ */
+
+},{"../utils.js":360,"bluebird":10,"deepstream.io-client-js":14,"fluture":37,"moment":41}],10:[function(require,module,exports){
 (function (process,global){
 /* @preserve
  * The MIT License (MIT)
@@ -6446,7 +7562,194 @@ module.exports = ret;
 },{"./es5":13}]},{},[4])(4)
 });                    ;if (typeof window !== 'undefined' && window !== null) {                               window.P = window.Promise;                                                     } else if (typeof self !== 'undefined' && self !== null) {                             self.P = self.Promise;                                                         }
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"_process":1}],6:[function(require,module,exports){
+},{"_process":2}],11:[function(require,module,exports){
+
+/**
+ * Expose `Emitter`.
+ */
+
+if (typeof module !== 'undefined') {
+  module.exports = Emitter;
+}
+
+/**
+ * Initialize a new `Emitter`.
+ *
+ * @api public
+ */
+
+function Emitter(obj) {
+  if (obj) return mixin(obj);
+};
+
+/**
+ * Mixin the emitter properties.
+ *
+ * @param {Object} obj
+ * @return {Object}
+ * @api private
+ */
+
+function mixin(obj) {
+  for (var key in Emitter.prototype) {
+    obj[key] = Emitter.prototype[key];
+  }
+  return obj;
+}
+
+/**
+ * Listen on the given `event` with `fn`.
+ *
+ * @param {String} event
+ * @param {Function} fn
+ * @return {Emitter}
+ * @api public
+ */
+
+Emitter.prototype.on =
+Emitter.prototype.addEventListener = function(event, fn){
+  this._callbacks = this._callbacks || Object.create(null);
+  (this._callbacks[event] = this._callbacks[event] || [])
+    .push(fn);
+  return this;
+};
+
+/**
+ * Adds an `event` listener that will be invoked a single
+ * time then automatically removed.
+ *
+ * @param {String} event
+ * @param {Function} fn
+ * @return {Emitter}
+ * @api public
+ */
+
+Emitter.prototype.once = function(event, fn){
+  function on() {
+    this.off(event, on);
+    fn.apply(this, arguments);
+  }
+
+  on.fn = fn;
+  this.on(event, on);
+  return this;
+};
+
+/**
+ * Remove the given callback for `event` or all
+ * registered callbacks.
+ *
+ * @param {String} event
+ * @param {Function} fn
+ * @return {Emitter}
+ * @api public
+ */
+
+Emitter.prototype.off =
+Emitter.prototype.removeListener =
+Emitter.prototype.removeAllListeners =
+Emitter.prototype.removeEventListener = function(event, fn){
+  this._callbacks = this._callbacks || Object.create(null);
+
+  // all
+  if (0 == arguments.length) {
+    this._callbacks = Object.create(null);
+    return this;
+  }
+
+  // specific event
+  var callbacks = this._callbacks[event];
+  if (!callbacks) return this;
+
+  // remove all handlers
+  if (1 == arguments.length) {
+    delete this._callbacks[event];
+    return this;
+  }
+
+  // remove specific handler
+  var cb;
+  for (var i = 0; i < callbacks.length; i++) {
+    cb = callbacks[i];
+    if (cb === fn || cb.fn === fn) {
+      callbacks.splice(i, 1);
+      break;
+    }
+  }
+
+  // Remove event specific arrays for event types that no
+  // one is subscribed for to avoid memory leak.
+  if (callbacks.length === 0) {
+    delete this._callbacks[event];
+  }
+
+  return this;
+};
+
+/**
+ * Emit `event` with the given args.
+ *
+ * @param {String} event
+ * @param {Mixed} ...
+ * @return {Emitter}
+ */
+
+Emitter.prototype.emit = function(event){
+  this._callbacks = this._callbacks || Object.create(null);
+
+  var args = new Array(arguments.length - 1)
+    , callbacks = this._callbacks[event];
+
+  for (var i = 1; i < arguments.length; i++) {
+    args[i - 1] = arguments[i];
+  }
+
+  if (callbacks) {
+    callbacks = callbacks.slice(0);
+    for (var i = 0, len = callbacks.length; i < len; ++i) {
+      callbacks[i].apply(this, args);
+    }
+  }
+
+  return this;
+};
+
+/**
+ * Return array of callbacks for `event`.
+ *
+ * @param {String} event
+ * @return {Array}
+ * @api public
+ */
+
+Emitter.prototype.listeners = function(event){
+  this._callbacks = this._callbacks || Object.create(null);
+  return this._callbacks[event] || [];
+};
+
+/**
+ * Check if this emitter has `event` handlers.
+ *
+ * @param {String} event
+ * @return {Boolean}
+ * @api public
+ */
+
+Emitter.prototype.hasListeners = function(event){
+  return !! this.listeners(event).length;
+};
+
+/**
+ * Returns an array listing the events for which the emitter has registered listeners.
+ *
+ * @return {Array}
+ * @api public
+ */
+Emitter.prototype.eventNames = function(){
+  return this._callbacks ? Object.keys(this._callbacks) : [];
+}
+
+},{}],12:[function(require,module,exports){
 (function (global){
 (function(global, f){
 
@@ -6601,7 +7904,7 @@ module.exports = ret;
 }));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"sanctuary-type-classes":7,"sanctuary-type-identifiers":322}],7:[function(require,module,exports){
+},{"sanctuary-type-classes":13,"sanctuary-type-identifiers":359}],13:[function(require,module,exports){
 /*
              ############                  #
             ############                  ###
@@ -8219,7 +9522,4882 @@ module.exports = ret;
 //. [`fantasy-land/zero`]:      https://github.com/fantasyland/fantasy-land#zero-method
 //. [type-classes]:             https://github.com/sanctuary-js/sanctuary-def#type-classes
 
-},{"sanctuary-type-identifiers":322}],8:[function(require,module,exports){
+},{"sanctuary-type-identifiers":359}],14:[function(require,module,exports){
+'use strict';
+
+var C = require('./constants/constants');
+var MS = require('./constants/merge-strategies');
+var Emitter = require('component-emitter2');
+var Connection = require('./message/connection');
+var EventHandler = require('./event/event-handler');
+var RpcHandler = require('./rpc/rpc-handler');
+var RecordHandler = require('./record/record-handler');
+var PresenceHandler = require('./presence/presence-handler');
+var defaultOptions = require('./default-options');
+var AckTimeoutRegistry = require('./utils/ack-timeout-registry');
+
+/**
+ * deepstream.io javascript client
+ *
+ * @copyright 2016 deepstreamHub GmbH
+ * @author deepstreamHub GmbH
+ *
+ *
+ * @{@link http://deepstream.io}
+ *
+ *
+ * @param {String} url     URL to connect to. The protocol can be ommited, e.g. <host>:<port>.
+ * @param {Object} options A map of options that extend the ones specified in default-options.js
+ *
+ * @public
+ * @constructor
+ */
+var Client = function Client(url, options) {
+  this._url = url;
+  this._options = this._getOptions(options || {});
+
+  this._connection = new Connection(this, this._url, this._options);
+  this._ackTimeoutRegistry = new AckTimeoutRegistry(this, this._options);
+
+  this.event = new EventHandler(this._options, this._connection, this);
+  this.rpc = new RpcHandler(this._options, this._connection, this);
+  this.record = new RecordHandler(this._options, this._connection, this);
+  this.presence = new PresenceHandler(this._options, this._connection, this);
+
+  this._messageCallbacks = {};
+  this._messageCallbacks[C.TOPIC.EVENT] = this.event._$handle.bind(this.event);
+  this._messageCallbacks[C.TOPIC.RPC] = this.rpc._$handle.bind(this.rpc);
+  this._messageCallbacks[C.TOPIC.RECORD] = this.record._$handle.bind(this.record);
+  this._messageCallbacks[C.TOPIC.PRESENCE] = this.presence._$handle.bind(this.presence);
+  this._messageCallbacks[C.TOPIC.ERROR] = this._onErrorMessage.bind(this);
+};
+
+Emitter(Client.prototype); // eslint-disable-line
+
+/**
+ * Send authentication parameters to the client to fully open
+ * the connection.
+ *
+ * Please note: Authentication parameters are send over an already established
+ * connection, rather than appended to the server URL. This means the parameters
+ * will be encrypted when used with a WSS / HTTPS connection. If the deepstream server
+ * on the other side has message logging enabled it will however be written to the logs in
+ * plain text. If additional security is a requirement it might therefor make sense to hash
+ * the password on the client.
+ *
+ * If the connection is not yet established the authentication parameter will be
+ * stored and send once it becomes available
+ *
+ * authParams can be any JSON serializable data structure and its up for the
+ * permission handler on the server to make sense of them, although something
+ * like { username: 'someName', password: 'somePass' } will probably make the most sense.
+ *
+ * login can be called multiple times until either the connection is authenticated or
+ * forcefully closed by the server since its maxAuthAttempts threshold has been exceeded
+ *
+ * @param   {Object}   authParams JSON.serializable authentication data
+ * @param   {Function} callback   Will be called with either (true) or (false, data)
+ *
+ * @public
+ * @returns {Client}
+ */
+Client.prototype.login = function (authParamsOrCallback, callback) {
+  if (typeof authParamsOrCallback === 'function') {
+    this._connection.authenticate({}, authParamsOrCallback);
+  } else {
+    this._connection.authenticate(authParamsOrCallback || {}, callback);
+  }
+  return this;
+};
+
+/**
+ * Closes the connection to the server.
+ *
+ * @public
+ * @returns {void}
+ */
+Client.prototype.close = function () {
+  this._connection.close();
+};
+
+/**
+ * Returns the current state of the connection.
+ *
+ * connectionState is one of CONSTANTS.CONNECTION_STATE
+ *
+ * @returns {[type]} [description]
+ */
+Client.prototype.getConnectionState = function () {
+  return this._connection.getState();
+};
+
+/**
+ * Returns a random string. The first block of characters
+ * is a timestamp, in order to allow databases to optimize for semi-
+ * sequentuel numberings
+ *
+ * @public
+ * @returns {String} unique id
+ */
+Client.prototype.getUid = function () {
+  var timestamp = new Date().getTime().toString(36);
+  var randomString = (Math.random() * 10000000000000000).toString(36).replace('.', '');
+
+  return timestamp + '-' + randomString;
+};
+
+/**
+ * Package private ack timeout registry. This is how all classes can get access to
+ * register timeouts.
+ * (Well... that's the intention anyways)
+ *
+ * @package private
+ * @returns {AckTimeoutRegistry}
+ */
+Client.prototype._$getAckTimeoutRegistry = function () {
+  return this._ackTimeoutRegistry;
+};
+
+/**
+ * Package private callback for parsed incoming messages. Will be invoked
+ * by the connection class
+ *
+ * @param   {Object} message parsed deepstream message
+ *
+ * @package private
+ * @returns {void}
+ */
+Client.prototype._$onMessage = function (message) {
+  if (this._messageCallbacks[message.topic]) {
+    this._messageCallbacks[message.topic](message);
+  } else {
+    message.processedError = true;
+    this._$onError(message.topic, C.EVENT.MESSAGE_PARSE_ERROR, 'Received message for unknown topic ' + message.topic);
+  }
+
+  if (message.action === C.ACTIONS.ERROR && !message.processedError) {
+    this._$onError(message.topic, message.data[0], message.data.slice(0));
+  }
+};
+
+/**
+ * Package private error callback. This is the single point at which
+ * errors are thrown in the client. (Well... that's the intention anyways)
+ *
+ * The expectations would be for implementations to subscribe
+ * to the client's error event to prevent errors from being thrown
+ * and then decide based on the event and topic parameters how
+ * to handle the errors
+ *
+ * IMPORTANT: Errors that are specific to a request, e.g. a RPC
+ * timing out or a record not being permissioned are passed directly
+ * to the method that requested them
+ *
+ * @param   {String} topic One of CONSTANTS.TOPIC
+ * @param   {String} event One of CONSTANTS.EVENT
+ * @param   {String} msg   Error dependent message
+ *
+ * @package private
+ * @returns {void}
+ */
+Client.prototype._$onError = function (topic, event, msg) {
+  var errorMsg = void 0;
+
+  /*
+   * Help to diagnose the problem quicker by checking for
+   * some common problems
+   */
+  if (event === C.EVENT.ACK_TIMEOUT || event === C.EVENT.RESPONSE_TIMEOUT) {
+    if (this.getConnectionState() === C.CONNECTION_STATE.AWAITING_AUTHENTICATION) {
+      errorMsg = 'Your message timed out because you\'re not authenticated. Have you called login()?';
+      setTimeout(this._$onError.bind(this, C.EVENT.NOT_AUTHENTICATED, C.TOPIC.ERROR, errorMsg), 1);
+    }
+  }
+
+  if (this.hasListeners('error')) {
+    this.emit('error', msg, event, topic);
+    this.emit(event, topic, msg);
+  } else {
+    console.log('--- You can catch all deepstream errors by subscribing to the error event ---');
+
+    errorMsg = event + ': ' + msg;
+
+    if (topic) {
+      errorMsg += ' (' + topic + ')';
+    }
+
+    throw new Error(errorMsg);
+  }
+};
+
+/**
+ * Passes generic messages from the error topic
+ * to the _$onError handler
+ *
+ * @param {Object} errorMessage parsed deepstream error message
+ *
+ * @private
+ * @returns {void}
+ */
+Client.prototype._onErrorMessage = function (errorMessage) {
+  this._$onError(errorMessage.topic, errorMessage.data[0], errorMessage.data[1]);
+};
+
+/**
+ * Creates a new options map by extending default
+ * options with the passed in options
+ *
+ * @param   {Object} options The user specified client configuration options
+ *
+ * @private
+ * @returns {Object}  merged options
+ */
+Client.prototype._getOptions = function (options) {
+  var mergedOptions = {};
+
+  for (var key in defaultOptions) {
+    if (typeof options[key] === 'undefined') {
+      mergedOptions[key] = defaultOptions[key];
+    } else {
+      mergedOptions[key] = options[key];
+    }
+  }
+
+  return mergedOptions;
+};
+
+/**
+ * Exports factory function to adjust to the current JS style of
+ * disliking 'new' :-)
+ *
+ * @param {String} url     URL to connect to. The protocol can be ommited, e.g. <host>:<port>.
+ * @param {Object} options A map of options that extend the ones specified in default-options.js
+ *
+ * @public
+ * @returns {void}
+ */
+function createDeepstream(url, options) {
+  return new Client(url, options);
+}
+
+/**
+ * Expose constants to allow consumers to access them
+*/
+Client.prototype.CONSTANTS = C;
+createDeepstream.CONSTANTS = C;
+
+/**
+ * Expose merge strategies to allow consumers to access them
+*/
+Client.prototype.MERGE_STRATEGIES = MS;
+createDeepstream.MERGE_STRATEGIES = MS;
+
+module.exports = createDeepstream;
+},{"./constants/constants":15,"./constants/merge-strategies":16,"./default-options":17,"./event/event-handler":18,"./message/connection":19,"./presence/presence-handler":22,"./record/record-handler":26,"./rpc/rpc-handler":28,"./utils/ack-timeout-registry":31,"component-emitter2":11}],15:[function(require,module,exports){
+'use strict';
+
+exports.CONNECTION_STATE = {};
+
+exports.CONNECTION_STATE.CLOSED = 'CLOSED';
+exports.CONNECTION_STATE.AWAITING_CONNECTION = 'AWAITING_CONNECTION';
+exports.CONNECTION_STATE.CHALLENGING = 'CHALLENGING';
+exports.CONNECTION_STATE.AWAITING_AUTHENTICATION = 'AWAITING_AUTHENTICATION';
+exports.CONNECTION_STATE.AUTHENTICATING = 'AUTHENTICATING';
+exports.CONNECTION_STATE.OPEN = 'OPEN';
+exports.CONNECTION_STATE.ERROR = 'ERROR';
+exports.CONNECTION_STATE.RECONNECTING = 'RECONNECTING';
+
+exports.MESSAGE_SEPERATOR = String.fromCharCode(30); // ASCII Record Seperator 1E
+exports.MESSAGE_PART_SEPERATOR = String.fromCharCode(31); // ASCII Unit Separator 1F
+
+exports.TYPES = {};
+exports.TYPES.STRING = 'S';
+exports.TYPES.OBJECT = 'O';
+exports.TYPES.NUMBER = 'N';
+exports.TYPES.NULL = 'L';
+exports.TYPES.TRUE = 'T';
+exports.TYPES.FALSE = 'F';
+exports.TYPES.UNDEFINED = 'U';
+
+exports.TOPIC = {};
+exports.TOPIC.CONNECTION = 'C';
+exports.TOPIC.AUTH = 'A';
+exports.TOPIC.ERROR = 'X';
+exports.TOPIC.EVENT = 'E';
+exports.TOPIC.RECORD = 'R';
+exports.TOPIC.RPC = 'P';
+exports.TOPIC.PRESENCE = 'U';
+exports.TOPIC.PRIVATE = 'PRIVATE/';
+
+exports.EVENT = {};
+exports.EVENT.CONNECTION_ERROR = 'connectionError';
+exports.EVENT.CONNECTION_STATE_CHANGED = 'connectionStateChanged';
+exports.EVENT.MAX_RECONNECTION_ATTEMPTS_REACHED = 'MAX_RECONNECTION_ATTEMPTS_REACHED';
+exports.EVENT.CONNECTION_AUTHENTICATION_TIMEOUT = 'CONNECTION_AUTHENTICATION_TIMEOUT';
+exports.EVENT.ACK_TIMEOUT = 'ACK_TIMEOUT';
+exports.EVENT.NO_RPC_PROVIDER = 'NO_RPC_PROVIDER';
+exports.EVENT.RESPONSE_TIMEOUT = 'RESPONSE_TIMEOUT';
+exports.EVENT.DELETE_TIMEOUT = 'DELETE_TIMEOUT';
+exports.EVENT.UNSOLICITED_MESSAGE = 'UNSOLICITED_MESSAGE';
+exports.EVENT.MESSAGE_DENIED = 'MESSAGE_DENIED';
+exports.EVENT.MESSAGE_PARSE_ERROR = 'MESSAGE_PARSE_ERROR';
+exports.EVENT.VERSION_EXISTS = 'VERSION_EXISTS';
+exports.EVENT.NOT_AUTHENTICATED = 'NOT_AUTHENTICATED';
+exports.EVENT.MESSAGE_PERMISSION_ERROR = 'MESSAGE_PERMISSION_ERROR';
+exports.EVENT.LISTENER_EXISTS = 'LISTENER_EXISTS';
+exports.EVENT.NOT_LISTENING = 'NOT_LISTENING';
+exports.EVENT.TOO_MANY_AUTH_ATTEMPTS = 'TOO_MANY_AUTH_ATTEMPTS';
+exports.EVENT.INVALID_AUTH_MSG = 'INVALID_AUTH_MSG';
+exports.EVENT.IS_CLOSED = 'IS_CLOSED';
+exports.EVENT.RECORD_NOT_FOUND = 'RECORD_NOT_FOUND';
+exports.EVENT.NOT_SUBSCRIBED = 'NOT_SUBSCRIBED';
+
+exports.ACTIONS = {};
+exports.ACTIONS.PING = 'PI';
+exports.ACTIONS.PONG = 'PO';
+exports.ACTIONS.ACK = 'A';
+exports.ACTIONS.REDIRECT = 'RED';
+exports.ACTIONS.CHALLENGE = 'CH';
+exports.ACTIONS.CHALLENGE_RESPONSE = 'CHR';
+exports.ACTIONS.READ = 'R';
+exports.ACTIONS.CREATE = 'C';
+exports.ACTIONS.UPDATE = 'U';
+exports.ACTIONS.PATCH = 'P';
+exports.ACTIONS.DELETE = 'D';
+exports.ACTIONS.SUBSCRIBE = 'S';
+exports.ACTIONS.UNSUBSCRIBE = 'US';
+exports.ACTIONS.HAS = 'H';
+exports.ACTIONS.SNAPSHOT = 'SN';
+exports.ACTIONS.INVOKE = 'I';
+exports.ACTIONS.SUBSCRIPTION_FOR_PATTERN_FOUND = 'SP';
+exports.ACTIONS.SUBSCRIPTION_FOR_PATTERN_REMOVED = 'SR';
+exports.ACTIONS.SUBSCRIPTION_HAS_PROVIDER = 'SH';
+exports.ACTIONS.LISTEN = 'L';
+exports.ACTIONS.UNLISTEN = 'UL';
+exports.ACTIONS.LISTEN_ACCEPT = 'LA';
+exports.ACTIONS.LISTEN_REJECT = 'LR';
+exports.ACTIONS.PROVIDER_UPDATE = 'PU';
+exports.ACTIONS.QUERY = 'Q';
+exports.ACTIONS.CREATEORREAD = 'CR';
+exports.ACTIONS.EVENT = 'EVT';
+exports.ACTIONS.ERROR = 'E';
+exports.ACTIONS.REQUEST = 'REQ';
+exports.ACTIONS.RESPONSE = 'RES';
+exports.ACTIONS.REJECTION = 'REJ';
+exports.ACTIONS.PRESENCE_JOIN = 'PNJ';
+exports.ACTIONS.PRESENCE_LEAVE = 'PNL';
+exports.ACTIONS.QUERY = 'Q';
+exports.ACTIONS.WRITE_ACKNOWLEDGEMENT = 'WA';
+
+exports.CALL_STATE = {};
+exports.CALL_STATE.INITIAL = 'INITIAL';
+exports.CALL_STATE.CONNECTING = 'CONNECTING';
+exports.CALL_STATE.ESTABLISHED = 'ESTABLISHED';
+exports.CALL_STATE.ACCEPTED = 'ACCEPTED';
+exports.CALL_STATE.DECLINED = 'DECLINED';
+exports.CALL_STATE.ENDED = 'ENDED';
+exports.CALL_STATE.ERROR = 'ERROR';
+},{}],16:[function(require,module,exports){
+'use strict';
+
+module.exports = {
+  /**
+  *  Choose the server's state over the client's
+  **/
+  REMOTE_WINS: function REMOTE_WINS(record, remoteValue, remoteVersion, callback) {
+    callback(null, remoteValue);
+  },
+
+  /**
+  *  Choose the local state over the server's
+  **/
+  LOCAL_WINS: function LOCAL_WINS(record, remoteValue, remoteVersion, callback) {
+    callback(null, record.get());
+  }
+};
+},{}],17:[function(require,module,exports){
+'use strict';
+
+var MERGE_STRATEGIES = require('./constants/merge-strategies');
+
+module.exports = {
+  /**
+   * @param {Number} heartBeatInterval           How often you expect the heartbeat to be sent.
+   *                                             If two heatbeats are missed in a row the client
+   *                                             will consider the server to have disconnected
+   *                                             and will close the connection in order to
+   *                                             establish a new one.
+   */
+  heartbeatInterval: 30000,
+
+  /**
+   * @param {Number} reconnectIntervalIncrement  Specifies the number of milliseconds by
+   *                                             which the time until the next reconnection
+   *                                             attempt will be incremented after every
+   *                                             unsuccesful attempt.
+   *                                             E.g. for 1500: if the connection is lost,
+   *                                             the client will attempt to reconnect immediatly,
+   *                                             if that fails it will try again after 1.5 seconds,
+   *                                             if that fails it will try again after 3 seconds
+   *                                             and so on
+   */
+  reconnectIntervalIncrement: 4000,
+
+  /**
+   * @param {Number} maxReconnectInterval        Specifies the maximum number of milliseconds for
+   *                                             the reconnectIntervalIncrement
+   *                                             The amount of reconnections will reach this value
+   *                                             then reconnectIntervalIncrement will be ignored.
+   */
+  maxReconnectInterval: 180000,
+
+  /**
+   * @param {Number} maxReconnectAttempts        The number of reconnection attempts until the
+   *                                             client gives up and declares the connection closed
+   */
+  maxReconnectAttempts: 5,
+
+  /**
+   * @param {Number} rpcAckTimeout               The number of milliseconds after which a rpc will
+   *                                             create an error if no Ack-message has been received
+   */
+  rpcAckTimeout: 6000,
+
+  /**
+   * @param {Number} rpcResponseTimeout          The number of milliseconds after which a rpc will
+   *                                             create an error if no response-message has been
+   *                                             received
+   */
+  rpcResponseTimeout: 10000,
+
+  /**
+   * @param {Number} subscriptionTimeout         The number of milliseconds that can pass after
+   *                                             providing/unproviding a RPC or subscribing/
+   *                                             unsubscribing/listening to a record before an
+   *                                             error is thrown
+   */
+  subscriptionTimeout: 2000,
+
+  /**
+   * @param {Number} maxMessagesPerPacket        If the implementation tries to send a large
+   *                                             number of messages at the same time, the deepstream
+   *                                             client will try to split them into smaller packets
+   *                                             and send these every
+   *                                             <timeBetweenSendingQueuedPackages> ms.
+   *
+   *                                             This parameter specifies the number of messages
+   *                                             after which deepstream sends the packet and
+   *                                             queues the remaining messages.
+   *                                             Set to Infinity to turn the feature off.
+   *
+   */
+  maxMessagesPerPacket: 100,
+
+  /**
+   * @param {Number} timeBetweenSendingQueuedPackages
+   *                                             Please see description for
+   *                                             maxMessagesPerPacket. Sets the time in ms.
+   */
+  timeBetweenSendingQueuedPackages: 16,
+
+  /**
+   * @param {Number} recordReadAckTimeout       The number of milliseconds from the moment
+   *                                            client.record.getRecord() is called until an error
+   *                                            is thrown since no ack message has been received.
+   */
+  recordReadAckTimeout: 15000,
+
+  /**
+   * @param {Number} recordReadTimeout           The number of milliseconds from the moment
+   *                                             client.record.getRecord() is called until an error
+   *                                             is thrown since no data has been received.
+   */
+  recordReadTimeout: 15000,
+
+  /**
+   * @param {Number} recordDeleteTimeout         The number of milliseconds from the moment
+   *                                             record.delete() is called until an error is
+   *                                             thrown since no delete ack message had been
+   *                                             received.
+   *                                             Please take into account that the deletion is only
+   *                                             complete after the record has been deleted from
+   *                                             both cache and storage
+   */
+  recordDeleteTimeout: 15000,
+
+  /**
+   * @param {String} path path to connect to
+   */
+  path: '/deepstream',
+
+  /**
+   *  @param {Function} mergeStrategy            This provides the default strategy used to
+   *                                             deal with merge conflicts.
+   *                                             If the merge strategy is not succesfull it will
+   *                                             set an error, else set the returned data as the
+   *                                             latest revision. This can be overriden on a per
+   *                                             record basis by setting the `setMergeStrategy`.
+   */
+  mergeStrategy: MERGE_STRATEGIES.REMOTE_WINS,
+
+  /**
+   * @param {Boolean} recordDeepCopy             Setting to false disabled deepcopying of record
+   *                                             data when provided via `get()` in a `subscribe`
+   *                                             callback. This improves speed at the expense of
+   *                                             the user having to ensure object immutability.
+   */
+  recordDeepCopy: true,
+
+  /**
+   * https://github.com/websockets/ws/blob/master/doc/ws.md#new-websocketaddress-protocols-options
+   *
+   * @param {Object} nodeSocketOptions           Options to pass to the websocket constructor in
+   *                                             node.
+   * @default null
+   */
+  nodeSocketOptions: null
+};
+},{"./constants/merge-strategies":16}],18:[function(require,module,exports){
+'use strict';
+
+var messageBuilder = require('../message/message-builder');
+var messageParser = require('../message/message-parser');
+var ResubscribeNotifier = require('../utils/resubscribe-notifier');
+var C = require('../constants/constants');
+var Listener = require('../utils/listener');
+var EventEmitter = require('component-emitter2');
+
+/**
+ * This class handles incoming and outgoing messages in relation
+ * to deepstream events. It basically acts like an event-hub that's
+ * replicated across all connected clients.
+ *
+ * @param {Object} options    deepstream options
+ * @param {Connection} connection
+ * @param {Client} client
+ * @public
+ * @constructor
+ */
+var EventHandler = function EventHandler(options, connection, client) {
+  this._options = options;
+  this._connection = connection;
+  this._client = client;
+  this._emitter = new EventEmitter();
+  this._listener = {};
+  this._ackTimeoutRegistry = client._$getAckTimeoutRegistry();
+  this._resubscribeNotifier = new ResubscribeNotifier(this._client, this._resubscribe.bind(this));
+};
+
+/**
+ * Subscribe to an event. This will receive both locally emitted events
+ * as well as events emitted by other connected clients.
+ *
+ * @param   {String}   name
+ * @param   {Function} callback
+ *
+ * @public
+ * @returns {void}
+ */
+EventHandler.prototype.subscribe = function (name, callback) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+  if (typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  if (!this._emitter.hasListeners(name)) {
+    this._ackTimeoutRegistry.add({
+      topic: C.TOPIC.EVENT,
+      action: C.ACTIONS.SUBSCRIBE,
+      name: name
+    });
+    this._connection.sendMsg(C.TOPIC.EVENT, C.ACTIONS.SUBSCRIBE, [name]);
+  }
+
+  this._emitter.on(name, callback);
+};
+
+/**
+ * Removes a callback for a specified event. If all callbacks
+ * for an event have been removed, the server will be notified
+ * that the client is unsubscribed as a listener
+ *
+ * @param   {String}   name
+ * @param   {Function} callback
+ *
+ * @public
+ * @returns {void}
+ */
+EventHandler.prototype.unsubscribe = function (name, callback) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+  if (callback !== undefined && typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+  this._emitter.off(name, callback);
+
+  if (!this._emitter.hasListeners(name)) {
+    this._ackTimeoutRegistry.add({
+      topic: C.TOPIC.EVENT,
+      action: C.ACTIONS.UNSUBSCRIBE,
+      name: name
+    });
+    this._connection.sendMsg(C.TOPIC.EVENT, C.ACTIONS.UNSUBSCRIBE, [name]);
+  }
+};
+
+/**
+ * Emits an event locally and sends a message to the server to
+ * broadcast the event to the other connected clients
+ *
+ * @param   {String} name
+ * @param   {Mixed} data will be serialized and deserialized to its original type.
+ *
+ * @public
+ * @returns {void}
+ */
+EventHandler.prototype.emit = function (name, data) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+
+  this._connection.sendMsg(C.TOPIC.EVENT, C.ACTIONS.EVENT, [name, messageBuilder.typed(data)]);
+  this._emitter.emit(name, data);
+};
+
+/**
+ * Allows to listen for event subscriptions made by this or other clients. This
+ * is useful to create "active" data providers, e.g. providers that only provide
+ * data for a particular event if a user is actually interested in it
+ *
+ * @param   {String}   pattern  A combination of alpha numeric characters and wildcards( * )
+ * @param   {Function} callback
+ *
+ * @public
+ * @returns {void}
+ */
+EventHandler.prototype.listen = function (pattern, callback) {
+  if (typeof pattern !== 'string' || pattern.length === 0) {
+    throw new Error('invalid argument pattern');
+  }
+  if (typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  if (this._listener[pattern] && !this._listener[pattern].destroyPending) {
+    this._client._$onError(C.TOPIC.EVENT, C.EVENT.LISTENER_EXISTS, pattern);
+    return;
+  } else if (this._listener[pattern]) {
+    this._listener[pattern].destroy();
+  }
+
+  this._listener[pattern] = new Listener(C.TOPIC.EVENT, pattern, callback, this._options, this._client, this._connection);
+};
+
+/**
+ * Removes a listener that was previously registered with listenForSubscriptions
+ *
+ * @param   {String}   pattern  A combination of alpha numeric characters and wildcards( * )
+ * @param   {Function} callback
+ *
+ * @public
+ * @returns {void}
+ */
+EventHandler.prototype.unlisten = function (pattern) {
+  if (typeof pattern !== 'string' || pattern.length === 0) {
+    throw new Error('invalid argument pattern');
+  }
+
+  var listener = this._listener[pattern];
+
+  if (listener && !listener.destroyPending) {
+    listener.sendDestroy();
+  } else if (this._listener[pattern]) {
+    this._ackTimeoutRegistry.add({
+      topic: C.TOPIC.EVENT,
+      action: C.EVENT.UNLISTEN,
+      name: pattern
+    });
+    this._listener[pattern].destroy();
+    delete this._listener[pattern];
+  } else {
+    this._client._$onError(C.TOPIC.RECORD, C.EVENT.NOT_LISTENING, pattern);
+  }
+};
+
+/**
+ * Handles incoming messages from the server
+ *
+ * @param   {Object} message parsed deepstream message
+ *
+ * @package private
+ * @returns {void}
+ */
+EventHandler.prototype._$handle = function (message) {
+  var name = message.data[message.action === C.ACTIONS.ACK ? 1 : 0];
+
+  if (message.action === C.ACTIONS.EVENT) {
+    if (message.data && message.data.length === 2) {
+      this._emitter.emit(name, messageParser.convertTyped(message.data[1], this._client));
+    } else {
+      this._emitter.emit(name);
+    }
+    return;
+  }
+
+  if (message.action === C.ACTIONS.ACK && message.data[0] === C.ACTIONS.UNLISTEN && this._listener[name] && this._listener[name].destroyPending) {
+    this._listener[name].destroy();
+    delete this._listener[name];
+    return;
+  } else if (this._listener[name]) {
+    this._listener[name]._$onMessage(message);
+    return;
+  } else if (message.action === C.ACTIONS.SUBSCRIPTION_FOR_PATTERN_REMOVED) {
+    // An unlisten ACK was received before an PATTERN_REMOVED which is a valid case
+    return;
+  } else if (message.action === C.ACTIONS.SUBSCRIPTION_HAS_PROVIDER) {
+    // record can receive a HAS_PROVIDER after discarding the record
+    return;
+  }
+
+  if (message.action === C.ACTIONS.ACK) {
+    this._ackTimeoutRegistry.clear(message);
+    return;
+  }
+
+  if (message.action === C.ACTIONS.ERROR) {
+    if (message.data[0] === C.EVENT.MESSAGE_DENIED) {
+      this._ackTimeoutRegistry.remove({
+        topic: C.TOPIC.EVENT,
+        name: message.data[1],
+        action: message.data[2]
+      });
+    } else if (message.data[0] === C.EVENT.NOT_SUBSCRIBED) {
+      this._ackTimeoutRegistry.remove({
+        topic: C.TOPIC.EVENT,
+        name: message.data[1],
+        action: C.ACTIONS.UNSUBSCRIBE
+      });
+    }
+    message.processedError = true;
+    this._client._$onError(C.TOPIC.EVENT, message.data[0], message.data[1]);
+    return;
+  }
+
+  this._client._$onError(C.TOPIC.EVENT, C.EVENT.UNSOLICITED_MESSAGE, name);
+};
+
+/**
+ * Resubscribes to events when connection is lost
+ *
+ * @package private
+ * @returns {void}
+ */
+EventHandler.prototype._resubscribe = function () {
+  var callbacks = this._emitter._callbacks;
+  for (var eventName in callbacks) {
+    this._connection.sendMsg(C.TOPIC.EVENT, C.ACTIONS.SUBSCRIBE, [eventName]);
+  }
+};
+
+module.exports = EventHandler;
+},{"../constants/constants":15,"../message/message-builder":20,"../message/message-parser":21,"../utils/listener":32,"../utils/resubscribe-notifier":33,"component-emitter2":11}],19:[function(require,module,exports){
+(function (global){
+'use strict';
+
+var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
+
+var BrowserWebSocket = global.WebSocket || global.MozWebSocket;
+var NodeWebSocket = require('ws');
+var messageParser = require('./message-parser');
+var messageBuilder = require('./message-builder');
+var utils = require('../utils/utils');
+var C = require('../constants/constants');
+
+/**
+ * Establishes a connection to a deepstream server using websockets
+ *
+ * @param {Client} client
+ * @param {String} url     Short url, e.g. <host>:<port>. Deepstream works out the protocol
+ * @param {Object} options connection options
+ *
+ * @constructor
+ */
+var Connection = function Connection(client, url, options) {
+  this._client = client;
+  this._options = options;
+  this._authParams = null;
+  this._authCallback = null;
+  this._deliberateClose = false;
+  this._redirecting = false;
+  this._tooManyAuthAttempts = false;
+  this._connectionAuthenticationTimeout = false;
+  this._challengeDenied = false;
+  this._queuedMessages = [];
+  this._reconnectTimeout = null;
+  this._reconnectionAttempt = 0;
+  this._currentPacketMessageCount = 0;
+  this._sendNextPacketTimeout = null;
+  this._currentMessageResetTimeout = null;
+  this._endpoint = null;
+  this._lastHeartBeat = null;
+  this._heartbeatInterval = null;
+
+  this._originalUrl = utils.parseUrl(url, this._options.path);
+  this._url = this._originalUrl;
+
+  this._state = C.CONNECTION_STATE.CLOSED;
+  this._createEndpoint();
+};
+
+/**
+ * Returns the current connection state.
+ * (One of constants.CONNECTION_STATE)
+ *
+ * @public
+ * @returns {String} connectionState
+ */
+Connection.prototype.getState = function () {
+  return this._state;
+};
+
+/**
+ * Sends the specified authentication parameters
+ * to the server. Can be called up to <maxAuthAttempts>
+ * times for the same connection.
+ *
+ * @param   {Object}   authParams A map of user defined auth parameters.
+ *                                E.g. { username:<String>, password:<String> }
+ * @param   {Function} callback   A callback that will be invoked with the authenticationr result
+ *
+ * @public
+ * @returns {void}
+ */
+Connection.prototype.authenticate = function (authParams, callback) {
+  if ((typeof authParams === 'undefined' ? 'undefined' : _typeof(authParams)) !== 'object') {
+    this._client._$onError(C.TOPIC.ERROR, C.EVENT.INVALID_AUTH_MSG, 'authParams is not an object');
+    return;
+  }
+
+  this._authParams = authParams;
+  this._authCallback = callback;
+
+  if (this._tooManyAuthAttempts || this._challengeDenied || this._connectionAuthenticationTimeout) {
+    this._client._$onError(C.TOPIC.ERROR, C.EVENT.IS_CLOSED, 'this client\'s connection was closed');
+    return;
+  } else if (this._deliberateClose === true && this._state === C.CONNECTION_STATE.CLOSED) {
+    this._createEndpoint();
+    this._deliberateClose = false;
+    return;
+  }
+
+  if (this._state === C.CONNECTION_STATE.AWAITING_AUTHENTICATION) {
+    this._sendAuthParams();
+  }
+};
+
+/**
+ * High level send message method. Creates a deepstream message
+ * string and invokes the actual send method.
+ *
+ * @param   {String} topic  One of C.TOPIC
+ * @param   {String} action One of C.ACTIONS
+ * @param   {[Mixed]} data   Date that will be added to the message. Primitive values will
+ *                          be appended directly, objects and arrays will be serialized as JSON
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype.sendMsg = function (topic, action, data) {
+  this.send(messageBuilder.getMsg(topic, action, data));
+};
+
+/**
+ * Main method for sending messages. Doesn't send messages instantly,
+ * but instead achieves conflation by adding them to the message
+ * buffer that will be drained on the next tick
+ *
+ * @param   {String} message deepstream message
+ *
+ * @public
+ * @returns {void}
+ */
+Connection.prototype.send = function (message) {
+  this._queuedMessages.push(message);
+  this._currentPacketMessageCount++;
+
+  if (this._currentMessageResetTimeout === null) {
+    this._currentMessageResetTimeout = utils.nextTick(this._resetCurrentMessageCount.bind(this));
+  }
+
+  if (this._state === C.CONNECTION_STATE.OPEN && this._queuedMessages.length < this._options.maxMessagesPerPacket && this._currentPacketMessageCount < this._options.maxMessagesPerPacket) {
+    this._sendQueuedMessages();
+  } else if (this._sendNextPacketTimeout === null) {
+    this._queueNextPacket();
+  }
+};
+
+/**
+ * Closes the connection. Using this method
+ * sets a _deliberateClose flag that will prevent the client from
+ * reconnecting.
+ *
+ * @public
+ * @returns {void}
+ */
+Connection.prototype.close = function () {
+  clearInterval(this._heartbeatInterval);
+  this._deliberateClose = true;
+  this._endpoint.close();
+};
+
+/**
+ * Creates the endpoint to connect to using the url deepstream
+ * was initialised with.
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._createEndpoint = function () {
+  this._endpoint = BrowserWebSocket ? new BrowserWebSocket(this._url) : new NodeWebSocket(this._url, this._options.nodeSocketOptions);
+
+  this._endpoint.onopen = this._onOpen.bind(this);
+  this._endpoint.onerror = this._onError.bind(this);
+  this._endpoint.onclose = this._onClose.bind(this);
+  this._endpoint.onmessage = this._onMessage.bind(this);
+};
+
+/**
+ * When the implementation tries to send a large
+ * number of messages in one execution thread, the first
+ * <maxMessagesPerPacket> are send straight away.
+ *
+ * _currentPacketMessageCount keeps track of how many messages
+ * went into that first packet. Once this number has been exceeded
+ * the remaining messages are written to a queue and this message
+ * is invoked on a timeout to reset the count.
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._resetCurrentMessageCount = function () {
+  this._currentPacketMessageCount = 0;
+  this._currentMessageResetTimeout = null;
+};
+
+/**
+ * Concatenates the messages in the current message queue
+ * and sends them as a single package. This will also
+ * empty the message queue and conclude the send process.
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._sendQueuedMessages = function () {
+  if (this._state !== C.CONNECTION_STATE.OPEN || this._endpoint.readyState !== this._endpoint.OPEN) {
+    return;
+  }
+
+  if (this._queuedMessages.length === 0) {
+    this._sendNextPacketTimeout = null;
+    return;
+  }
+
+  var message = this._queuedMessages.splice(0, this._options.maxMessagesPerPacket).join('');
+
+  if (this._queuedMessages.length !== 0) {
+    this._queueNextPacket();
+  } else {
+    this._sendNextPacketTimeout = null;
+  }
+
+  this._submit(message);
+};
+
+/**
+ * Sends a message to over the endpoint connection directly
+ *
+ * Will generate a connection error if the websocket was closed
+ * prior to an onclose event.
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._submit = function (message) {
+  if (this._endpoint.readyState === this._endpoint.OPEN) {
+    this._endpoint.send(message);
+  } else {
+    this._onError('Tried to send message on a closed websocket connection');
+  }
+};
+
+/**
+ * Schedules the next packet whilst the connection is under
+ * heavy load.
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._queueNextPacket = function () {
+  var fn = this._sendQueuedMessages.bind(this);
+  var delay = this._options.timeBetweenSendingQueuedPackages;
+
+  this._sendNextPacketTimeout = setTimeout(fn, delay);
+};
+
+/**
+ * Sends authentication params to the server. Please note, this
+ * doesn't use the queued message mechanism, but rather sends the message directly
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._sendAuthParams = function () {
+  this._setState(C.CONNECTION_STATE.AUTHENTICATING);
+  var authMessage = messageBuilder.getMsg(C.TOPIC.AUTH, C.ACTIONS.REQUEST, [this._authParams]);
+  this._submit(authMessage);
+};
+
+/**
+ * Ensures that a heartbeat was not missed more than once, otherwise it considers the connection
+ * to have been lost and closes it for reconnection.
+ * @return {void}
+ */
+Connection.prototype._checkHeartBeat = function () {
+  var heartBeatTolerance = this._options.heartbeatInterval * 2;
+
+  if (Date.now() - this._lastHeartBeat > heartBeatTolerance) {
+    clearInterval(this._heartbeatInterval);
+    this._client._$onError(C.TOPIC.CONNECTION, C.EVENT.CONNECTION_ERROR, 'heartbeat not received in the last ' + heartBeatTolerance + ' milliseconds');
+    this._endpoint.close();
+  }
+};
+
+/**
+ * Will be invoked once the connection is established. The client
+ * can't send messages yet, and needs to get a connection ACK or REDIRECT
+ * from the server before authenticating
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._onOpen = function () {
+  this._clearReconnect();
+  this._lastHeartBeat = Date.now();
+  this._heartbeatInterval = utils.setInterval(this._checkHeartBeat.bind(this), this._options.heartbeatInterval);
+  this._setState(C.CONNECTION_STATE.AWAITING_CONNECTION);
+};
+
+/**
+ * Callback for generic connection errors. Forwards
+ * the error to the client.
+ *
+ * The connection is considered broken once this method has been
+ * invoked.
+ *
+ * @param   {String|Error} error connection error
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._onError = function (error) {
+  var _this = this;
+
+  clearInterval(this._heartbeatInterval);
+  this._setState(C.CONNECTION_STATE.ERROR);
+
+  /*
+   * If the implementation isn't listening on the error event this will throw
+   * an error. So let's defer it to allow the reconnection to kick in.
+   */
+  setTimeout(function () {
+    var msg = void 0;
+    if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') {
+      msg = 'Can\'t connect! Deepstream server unreachable on ' + _this._originalUrl;
+    } else {
+      msg = error.toString();
+    }
+    _this._client._$onError(C.TOPIC.CONNECTION, C.EVENT.CONNECTION_ERROR, msg);
+  }, 1);
+};
+
+/**
+ * Callback when the connection closes. This might have been a deliberate
+ * close triggered by the client or the result of the connection getting
+ * lost.
+ *
+ * In the latter case the client will try to reconnect using the configured
+ * strategy.
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._onClose = function () {
+  clearInterval(this._heartbeatInterval);
+
+  if (this._redirecting === true) {
+    this._redirecting = false;
+    this._createEndpoint();
+  } else if (this._deliberateClose === true) {
+    this._setState(C.CONNECTION_STATE.CLOSED);
+  } else {
+    this._tryReconnect();
+  }
+};
+
+/**
+ * Callback for messages received on the connection.
+ *
+ * @param   {String} message deepstream message
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._onMessage = function (message) {
+  var parsedMessages = messageParser.parse(message.data, this._client);
+
+  for (var i = 0; i < parsedMessages.length; i++) {
+    if (parsedMessages[i] === null) {
+      continue;
+    } else if (parsedMessages[i].topic === C.TOPIC.CONNECTION) {
+      this._handleConnectionResponse(parsedMessages[i]);
+    } else if (parsedMessages[i].topic === C.TOPIC.AUTH) {
+      this._handleAuthResponse(parsedMessages[i]);
+    } else {
+      this._client._$onMessage(parsedMessages[i]);
+    }
+  }
+};
+
+/**
+ * The connection response will indicate whether the deepstream connection
+ * can be used or if it should be forwarded to another instance. This
+ * allows us to introduce load-balancing if needed.
+ *
+ * If authentication parameters are already provided this will kick of
+ * authentication immediately. The actual 'open' event won't be emitted
+ * by the client until the authentication is successful.
+ *
+ * If a challenge is recieved, the user will send the url to the server
+ * in response to get the appropriate redirect. If the URL is invalid the
+ * server will respond with a REJECTION resulting in the client connection
+ * being permanently closed.
+ *
+ * If a redirect is recieved, this connection is closed and updated with
+ * a connection to the url supplied in the message.
+ *
+ * @param   {Object} message parsed connection message
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._handleConnectionResponse = function (message) {
+  if (message.action === C.ACTIONS.PING) {
+    this._lastHeartBeat = Date.now();
+    this._submit(messageBuilder.getMsg(C.TOPIC.CONNECTION, C.ACTIONS.PONG));
+  } else if (message.action === C.ACTIONS.ACK) {
+    this._setState(C.CONNECTION_STATE.AWAITING_AUTHENTICATION);
+    if (this._authParams) {
+      this._sendAuthParams();
+    }
+  } else if (message.action === C.ACTIONS.CHALLENGE) {
+    this._setState(C.CONNECTION_STATE.CHALLENGING);
+    this._submit(messageBuilder.getMsg(C.TOPIC.CONNECTION, C.ACTIONS.CHALLENGE_RESPONSE, [this._originalUrl]));
+  } else if (message.action === C.ACTIONS.REJECTION) {
+    this._challengeDenied = true;
+    this.close();
+  } else if (message.action === C.ACTIONS.REDIRECT) {
+    this._url = message.data[0];
+    this._redirecting = true;
+    this._endpoint.close();
+  } else if (message.action === C.ACTIONS.ERROR) {
+    if (message.data[0] === C.EVENT.CONNECTION_AUTHENTICATION_TIMEOUT) {
+      this._deliberateClose = true;
+      this._connectionAuthenticationTimeout = true;
+      this._client._$onError(C.TOPIC.CONNECTION, message.data[0], message.data[1]);
+    }
+  }
+};
+
+/**
+ * Callback for messages received for the AUTH topic. If
+ * the authentication was successful this method will
+ * open the connection and send all messages that the client
+ * tried to send so far.
+ *
+ * @param   {Object} message parsed auth message
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._handleAuthResponse = function (message) {
+  if (message.action === C.ACTIONS.ERROR) {
+
+    if (message.data[0] === C.EVENT.TOO_MANY_AUTH_ATTEMPTS) {
+      this._deliberateClose = true;
+      this._tooManyAuthAttempts = true;
+    } else if (message.data[0] === C.EVENT.INVALID_AUTH_MSG) {
+      this._deliberateClose = true;
+
+      if (this._authCallback) {
+        this._authCallback(false, 'invalid authentication message');
+      }
+
+      return;
+    } else {
+      this._setState(C.CONNECTION_STATE.AWAITING_AUTHENTICATION);
+    }
+
+    if (this._authCallback) {
+      this._authCallback(false, this._getAuthData(message.data[1]));
+    }
+  } else if (message.action === C.ACTIONS.ACK) {
+    this._setState(C.CONNECTION_STATE.OPEN);
+
+    if (this._authCallback) {
+      this._authCallback(true, this._getAuthData(message.data[0]));
+    }
+
+    this._sendQueuedMessages();
+  }
+};
+
+/**
+ * Checks if data is present with login ack and converts it
+ * to the correct type
+ *
+ * @param {Object} message parsed and validated deepstream message
+ *
+ * @private
+ * @returns {object}
+ */
+Connection.prototype._getAuthData = function (data) {
+  if (data === undefined) {
+    return null;
+  }
+  return messageParser.convertTyped(data, this._client);
+};
+
+/**
+ * Updates the connection state and emits the
+ * connectionStateChanged event on the client
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._setState = function (state) {
+  this._state = state;
+  this._client.emit(C.EVENT.CONNECTION_STATE_CHANGED, state);
+};
+
+/**
+ * If the connection drops or is closed in error this
+ * method schedules increasing reconnection intervals
+ *
+ * If the number of failed reconnection attempts exceeds
+ * options.maxReconnectAttempts the connection is closed
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._tryReconnect = function () {
+  if (this._reconnectTimeout !== null) {
+    return;
+  }
+
+  if (this._reconnectionAttempt < this._options.maxReconnectAttempts) {
+    this._setState(C.CONNECTION_STATE.RECONNECTING);
+    this._reconnectTimeout = setTimeout(this._tryOpen.bind(this), Math.min(this._options.maxReconnectInterval, this._options.reconnectIntervalIncrement * this._reconnectionAttempt));
+    this._reconnectionAttempt++;
+  } else {
+    this._clearReconnect();
+    this.close();
+    this._client.emit(C.EVENT.MAX_RECONNECTION_ATTEMPTS_REACHED, this._reconnectionAttempt);
+  }
+};
+
+/**
+ * Attempts to open a errourosly closed connection
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._tryOpen = function () {
+  if (this._originalUrl !== this._url) {
+    this._url = this._originalUrl;
+  }
+  this._createEndpoint();
+  this._reconnectTimeout = null;
+};
+
+/**
+ * Stops all further reconnection attempts,
+ * either because the connection is open again
+ * or because the maximal number of reconnection
+ * attempts has been exceeded
+ *
+ * @private
+ * @returns {void}
+ */
+Connection.prototype._clearReconnect = function () {
+  clearTimeout(this._reconnectTimeout);
+  this._reconnectTimeout = null;
+  this._reconnectionAttempt = 0;
+};
+
+module.exports = Connection;
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"../constants/constants":15,"../utils/utils":35,"./message-builder":20,"./message-parser":21,"ws":1}],20:[function(require,module,exports){
+'use strict';
+
+var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
+
+var C = require('../constants/constants');
+
+var SEP = C.MESSAGE_PART_SEPERATOR;
+
+/**
+ * Creates a deepstream message string, based on the
+ * provided parameters
+ *
+ * @param   {String} topic  One of CONSTANTS.TOPIC
+ * @param   {String} action One of CONSTANTS.ACTIONS
+ * @param   {Array} data An array of strings or JSON-serializable objects
+ *
+ * @returns {String} deepstream message string
+ */
+exports.getMsg = function (topic, action, data) {
+  if (data && !(data instanceof Array)) {
+    throw new Error('data must be an array');
+  }
+  var sendData = [topic, action];
+
+  if (data) {
+    for (var i = 0; i < data.length; i++) {
+      if (_typeof(data[i]) === 'object') {
+        sendData.push(JSON.stringify(data[i]));
+      } else {
+        sendData.push(data[i]);
+      }
+    }
+  }
+
+  return sendData.join(SEP) + C.MESSAGE_SEPERATOR;
+};
+
+/**
+ * Converts a serializable value into its string-representation and adds
+ * a flag that provides instructions on how to deserialize it.
+ *
+ * Please see messageParser.convertTyped for the counterpart of this method
+ *
+ * @param {Mixed} value
+ *
+ * @public
+ * @returns {String} string representation of the value
+ */
+exports.typed = function (value) {
+  var type = typeof value === 'undefined' ? 'undefined' : _typeof(value);
+
+  if (type === 'string') {
+    return C.TYPES.STRING + value;
+  }
+
+  if (value === null) {
+    return C.TYPES.NULL;
+  }
+
+  if (type === 'object') {
+    return C.TYPES.OBJECT + JSON.stringify(value);
+  }
+
+  if (type === 'number') {
+    return C.TYPES.NUMBER + value.toString();
+  }
+
+  if (value === true) {
+    return C.TYPES.TRUE;
+  }
+
+  if (value === false) {
+    return C.TYPES.FALSE;
+  }
+
+  if (value === undefined) {
+    return C.TYPES.UNDEFINED;
+  }
+
+  throw new Error('Can\'t serialize type ' + value);
+};
+},{"../constants/constants":15}],21:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+
+/**
+ * Parses ASCII control character seperated
+ * message strings into digestable maps
+ *
+ * @constructor
+ */
+var MessageParser = function MessageParser() {
+  this._actions = this._getActions();
+};
+
+/**
+ * Main interface method. Receives a raw message
+ * string, containing one or more messages
+ * and returns an array of parsed message objects
+ * or null for invalid messages
+ *
+ * @param   {String} message raw message
+ *
+ * @public
+ *
+ * @returns {Array} array of parsed message objects
+ *                  following the format
+ *                  {
+ *                    raw: <original message string>
+ *                    topic: <string>
+ *                    action: <string - shortcode>
+ *                    data: <array of strings>
+ *                  }
+ */
+MessageParser.prototype.parse = function (message, client) {
+  var parsedMessages = [];
+  var rawMessages = message.split(C.MESSAGE_SEPERATOR);
+
+  for (var i = 0; i < rawMessages.length; i++) {
+    if (rawMessages[i].length > 2) {
+      parsedMessages.push(this._parseMessage(rawMessages[i], client));
+    }
+  }
+
+  return parsedMessages;
+};
+
+/**
+ * Deserializes values created by MessageBuilder.typed to
+ * their original format
+ *
+ * @param {String} value
+ *
+ * @public
+ * @returns {Mixed} original value
+ */
+MessageParser.prototype.convertTyped = function (value, client) {
+  var type = value.charAt(0);
+
+  if (type === C.TYPES.STRING) {
+    return value.substr(1);
+  }
+
+  if (type === C.TYPES.OBJECT) {
+    try {
+      return JSON.parse(value.substr(1));
+    } catch (e) {
+      client._$onError(C.TOPIC.ERROR, C.EVENT.MESSAGE_PARSE_ERROR, e.toString() + '(' + value + ')');
+      return undefined;
+    }
+  }
+
+  if (type === C.TYPES.NUMBER) {
+    return parseFloat(value.substr(1));
+  }
+
+  if (type === C.TYPES.NULL) {
+    return null;
+  }
+
+  if (type === C.TYPES.TRUE) {
+    return true;
+  }
+
+  if (type === C.TYPES.FALSE) {
+    return false;
+  }
+
+  if (type === C.TYPES.UNDEFINED) {
+    return undefined;
+  }
+
+  client._$onError(C.TOPIC.ERROR, C.EVENT.MESSAGE_PARSE_ERROR, 'UNKNOWN_TYPE (' + value + ')');
+  return undefined;
+};
+
+/**
+ * Turns the ACTION:SHORTCODE constants map
+ * around to facilitate shortcode lookup
+ *
+ * @private
+ *
+ * @returns {Object} actions
+ */
+MessageParser.prototype._getActions = function () {
+  var actions = {};
+
+  for (var key in C.ACTIONS) {
+    actions[C.ACTIONS[key]] = key;
+  }
+
+  return actions;
+};
+
+/**
+ * Parses an individual message (as oppnosed to a
+ * block of multiple messages as is processed by .parse())
+ *
+ * @param   {String} message
+ *
+ * @private
+ *
+ * @returns {Object} parsedMessage
+ */
+MessageParser.prototype._parseMessage = function (message, client) {
+  var parts = message.split(C.MESSAGE_PART_SEPERATOR);
+  var messageObject = {};
+
+  if (parts.length < 2) {
+    client._$onError(C.TOPIC.ERROR, C.EVENT.MESSAGE_PARSE_ERROR, 'Insufficiant message parts');
+    return null;
+  }
+
+  if (this._actions[parts[1]] === undefined) {
+    client._$onError(C.TOPIC.ERROR, C.EVENT.MESSAGE_PARSE_ERROR, 'Unknown action ' + parts[1]);
+    return null;
+  }
+
+  messageObject.raw = message;
+  messageObject.topic = parts[0];
+  messageObject.action = parts[1];
+  messageObject.data = parts.splice(2);
+
+  return messageObject;
+};
+
+module.exports = new MessageParser();
+},{"../constants/constants":15}],22:[function(require,module,exports){
+'use strict';
+
+var EventEmitter = require('component-emitter2');
+var C = require('../constants/constants');
+var ResubscribeNotifier = require('../utils/resubscribe-notifier');
+
+/**
+ * The main class for presence in deepstream
+ *
+ * Provides the presence interface and handles incoming messages
+ * on the presence topic
+ *
+ * @param {Object} options deepstream configuration options
+ * @param {Connection} connection
+ * @param {Client} client
+ *
+ * @constructor
+ * @public
+ */
+var PresenceHandler = function PresenceHandler(options, connection, client) {
+  this._options = options;
+  this._connection = connection;
+  this._client = client;
+  this._emitter = new EventEmitter();
+  this._ackTimeoutRegistry = client._$getAckTimeoutRegistry();
+  this._resubscribeNotifier = new ResubscribeNotifier(this._client, this._resubscribe.bind(this));
+};
+
+/**
+ * Queries for clients logged into deepstream.
+ *
+ * @param   {Function} callback Will be invoked with an array of clients
+ *
+ * @public
+ * @returns {void}
+ */
+PresenceHandler.prototype.getAll = function (callback) {
+  if (!this._emitter.hasListeners(C.ACTIONS.QUERY)) {
+    // At least one argument is required for a message to be permissionable
+    this._connection.sendMsg(C.TOPIC.PRESENCE, C.ACTIONS.QUERY, [C.ACTIONS.QUERY]);
+  }
+  this._emitter.once(C.ACTIONS.QUERY, callback);
+};
+
+/**
+ * Subscribes to client logins or logouts in deepstream
+ *
+ * @param   {Function} callback Will be invoked with the username of a client,
+ *                              and a boolean to indicate if it was a login or
+ *                              logout event
+ * @public
+ * @returns {void}
+ */
+PresenceHandler.prototype.subscribe = function (callback) {
+  if (callback !== undefined && typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  if (!this._emitter.hasListeners(C.TOPIC.PRESENCE)) {
+    this._ackTimeoutRegistry.add({
+      topic: C.TOPIC.PRESENCE,
+      action: C.ACTIONS.SUBSCRIBE,
+      name: C.TOPIC.PRESENCE
+    });
+    this._connection.sendMsg(C.TOPIC.PRESENCE, C.ACTIONS.SUBSCRIBE, [C.ACTIONS.SUBSCRIBE]);
+  }
+
+  this._emitter.on(C.TOPIC.PRESENCE, callback);
+};
+
+/**
+ * Removes a callback for a specified presence event
+ *
+ * @param   {Function} callback The callback to unregister via {PresenceHandler#unsubscribe}
+ *
+ * @public
+ * @returns {void}
+ */
+PresenceHandler.prototype.unsubscribe = function (callback) {
+  if (callback !== undefined && typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  this._emitter.off(C.TOPIC.PRESENCE, callback);
+
+  if (!this._emitter.hasListeners(C.TOPIC.PRESENCE)) {
+    this._ackTimeoutRegistry.add({
+      topic: C.TOPIC.PRESENCE,
+      action: C.ACTIONS.UNSUBSCRIBE,
+      name: C.TOPIC.PRESENCE
+    });
+    this._connection.sendMsg(C.TOPIC.PRESENCE, C.ACTIONS.UNSUBSCRIBE, [C.ACTIONS.UNSUBSCRIBE]);
+  }
+};
+
+/**
+ * Handles incoming messages from the server
+ *
+ * @param   {Object} message parsed deepstream message
+ *
+ * @package private
+ * @returns {void}
+ */
+PresenceHandler.prototype._$handle = function (message) {
+  if (message.action === C.ACTIONS.ERROR && message.data[0] === C.EVENT.MESSAGE_DENIED) {
+    this._ackTimeoutRegistry.remove(C.TOPIC.PRESENCE, message.data[1]);
+    message.processedError = true;
+    this._client._$onError(C.TOPIC.PRESENCE, C.EVENT.MESSAGE_DENIED, message.data[1]);
+  } else if (message.action === C.ACTIONS.ACK) {
+    this._ackTimeoutRegistry.clear(message);
+  } else if (message.action === C.ACTIONS.PRESENCE_JOIN) {
+    this._emitter.emit(C.TOPIC.PRESENCE, message.data[0], true);
+  } else if (message.action === C.ACTIONS.PRESENCE_LEAVE) {
+    this._emitter.emit(C.TOPIC.PRESENCE, message.data[0], false);
+  } else if (message.action === C.ACTIONS.QUERY) {
+    this._emitter.emit(C.ACTIONS.QUERY, message.data);
+  } else {
+    this._client._$onError(C.TOPIC.PRESENCE, C.EVENT.UNSOLICITED_MESSAGE, message.action);
+  }
+};
+
+/**
+ * Resubscribes to presence subscription when connection is lost
+ *
+ * @package private
+ * @returns {void}
+ */
+PresenceHandler.prototype._resubscribe = function () {
+  var callbacks = this._emitter._callbacks;
+  if (callbacks && callbacks[C.TOPIC.PRESENCE]) {
+    this._connection.sendMsg(C.TOPIC.PRESENCE, C.ACTIONS.SUBSCRIBE, [C.ACTIONS.SUBSCRIBE]);
+  }
+};
+
+module.exports = PresenceHandler;
+},{"../constants/constants":15,"../utils/resubscribe-notifier":33,"component-emitter2":11}],23:[function(require,module,exports){
+'use strict';
+/* eslint-disable prefer-rest-params, prefer-spread */
+
+var Record = require('./record');
+var EventEmitter = require('component-emitter2');
+
+/**
+ * An AnonymousRecord is a record without a predefined name. It
+ * acts like a wrapper around an actual record that can
+ * be swapped out for another one whilst keeping all bindings intact.
+ *
+ * Imagine a customer relationship management system with a list of users
+ * on the left and a user detail panel on the right. The user detail
+ * panel could use the anonymous record to set up its bindings, yet whenever
+ * a user is chosen from the list of existing users the anonymous record's
+ * setName method is called and the detail panel will update to
+ * show the selected user's details
+ *
+ * @param {RecordHandler} recordHandler
+ *
+ * @constructor
+ */
+var AnonymousRecord = function AnonymousRecord(recordHandler) {
+  this.name = null;
+  this._recordHandler = recordHandler;
+  this._record = null;
+  this._subscriptions = [];
+  this._proxyMethod('delete');
+  this._proxyMethod('set');
+  this._proxyMethod('discard');
+};
+
+EventEmitter(AnonymousRecord.prototype); // eslint-disable-line
+
+/**
+ * Proxies the actual record's get method. It is valid
+ * to call get prior to setName - if no record exists,
+ * the method returns undefined
+ *
+ * @param   {[String]} path A json path. If non is provided,
+ *                          the entire record is returned.
+ *
+ * @public
+ * @returns {mixed}    the value of path or the entire object
+ */
+AnonymousRecord.prototype.get = function (path) {
+  if (this._record === null) {
+    return undefined;
+  }
+
+  return this._record.get(path);
+};
+
+/**
+ * Proxies the actual record's subscribe method. The same parameters
+ * can be used. Can be called prior to setName(). Please note, triggerIfReady
+ * will always be set to true to reflect changes in the underlying record.
+ *
+ * @param   {[String]} path   A json path. If non is provided,
+ *                              it subscribes to changes for the entire record.
+ *
+ * @param   {Function} callback A callback function that will be invoked whenever
+ *                              the subscribed path or record updates
+ *
+ * @public
+ * @returns {void}
+ */
+AnonymousRecord.prototype.subscribe = function () {
+  var parameters = Record.prototype._normalizeArguments(arguments);
+  parameters.triggerNow = true;
+  this._subscriptions.push(parameters);
+
+  if (this._record !== null) {
+    this._record.subscribe(parameters);
+  }
+};
+
+/**
+ * Proxies the actual record's unsubscribe method. The same parameters
+ * can be used. Can be called prior to setName()
+ *
+ * @param   {[String]} path   A json path. If non is provided,
+ *                              it subscribes to changes for the entire record.
+ *
+ * @param   {Function} callback A callback function that will be invoked whenever
+ *                              the subscribed path or record updates
+ *
+ * @public
+ * @returns {void}
+ */
+AnonymousRecord.prototype.unsubscribe = function () {
+  var parameters = Record.prototype._normalizeArguments(arguments);
+  var subscriptions = [];
+  var i = void 0;
+
+  for (i = 0; i < this._subscriptions.length; i++) {
+    if (this._subscriptions[i].path !== parameters.path || this._subscriptions[i].callback !== parameters.callback) {
+      subscriptions.push(this._subscriptions[i]);
+    }
+  }
+
+  this._subscriptions = subscriptions;
+
+  if (this._record !== null) {
+    this._record.unsubscribe(parameters);
+  }
+};
+
+/**
+ * Sets the underlying record the anonymous record is bound
+ * to. Can be called multiple times.
+ *
+ * @param {String} recordName
+ *
+ * @public
+ * @returns {void}
+ */
+AnonymousRecord.prototype.setName = function (recordName) {
+  if (this.name === recordName) {
+    return;
+  }
+
+  this.name = recordName;
+
+  var i = void 0;
+
+  if (this._record !== null && !this._record.isDestroyed) {
+    for (i = 0; i < this._subscriptions.length; i++) {
+      this._record.unsubscribe(this._subscriptions[i]);
+    }
+    this._record.discard();
+  }
+
+  this._record = this._recordHandler.getRecord(recordName);
+
+  for (i = 0; i < this._subscriptions.length; i++) {
+    this._record.subscribe(this._subscriptions[i]);
+  }
+
+  this._record.whenReady(this.emit.bind(this, 'ready'));
+  this.emit('nameChanged', recordName);
+};
+
+/**
+ * Adds the specified method to this method and forwards it
+ * to _callMethodOnRecord
+ *
+ * @param   {String} methodName
+ *
+ * @private
+ * @returns {void}
+ */
+AnonymousRecord.prototype._proxyMethod = function (methodName) {
+  this[methodName] = this._callMethodOnRecord.bind(this, methodName);
+};
+
+/**
+ * Invokes the specified method with the provided parameters on
+ * the underlying record. Throws erros if the method is not
+ * specified yet or doesn't expose the method in question
+ *
+ * @param   {String} methodName
+ *
+ * @private
+ * @returns {Mixed} the return value of the actual method
+ */
+AnonymousRecord.prototype._callMethodOnRecord = function (methodName) {
+  if (this._record === null) {
+    throw new Error('Can`t invoke ' + methodName + '. AnonymousRecord not initialised. Call setName first');
+  }
+
+  if (typeof this._record[methodName] !== 'function') {
+    throw new Error(methodName + ' is not a method on the record');
+  }
+
+  var args = Array.prototype.slice.call(arguments, 1);
+
+  return this._record[methodName].apply(this._record, args);
+};
+
+module.exports = AnonymousRecord;
+},{"./record":27,"component-emitter2":11}],24:[function(require,module,exports){
+'use strict';
+
+var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
+
+var utils = require('../utils/utils');
+
+var PARTS_REG_EXP = /([^.[\]\s]+)/g;
+var cache = Object.create(null);
+
+/**
+ * Returns the value of the path or
+ * undefined if the path can't be resolved
+ *
+ * @public
+ * @returns {Mixed}
+ */
+module.exports.get = function (data, path, deepCopy) {
+  var tokens = tokenize(path);
+  var value = data;
+  for (var i = 0; i < tokens.length; i++) {
+    if (value === undefined) {
+      return undefined;
+    }
+    if ((typeof value === 'undefined' ? 'undefined' : _typeof(value)) !== 'object') {
+      throw new Error('invalid data or path');
+    }
+    value = value[tokens[i]];
+  }
+
+  return deepCopy !== false ? utils.deepCopy(value) : value;
+};
+
+/**
+ * Sets the value of the path. If the path (or parts
+ * of it) doesn't exist yet, it will be created
+ *
+ * @param {Mixed} value
+ *
+ * @public
+ * @returns {Mixed} updated value
+ */
+module.exports.set = function (data, path, value, deepCopy) {
+  var tokens = tokenize(path);
+
+  if (tokens.length === 0) {
+    return patch(data, value, deepCopy);
+  }
+
+  var oldValue = module.exports.get(data, path, false);
+  var newValue = patch(oldValue, value, deepCopy);
+
+  if (newValue === oldValue) {
+    return data;
+  }
+
+  var result = utils.shallowCopy(data);
+
+  var node = result;
+  for (var i = 0; i < tokens.length; i++) {
+    if (i === tokens.length - 1) {
+      node[tokens[i]] = newValue;
+    } else if (node[tokens[i]] !== undefined) {
+      node = node[tokens[i]] = utils.shallowCopy(node[tokens[i]]);
+    } else if (tokens[i + 1] && !isNaN(tokens[i + 1])) {
+      node = node[tokens[i]] = [];
+    } else {
+      node = node[tokens[i]] = Object.create(null);
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Merge the new value into the old value
+ * @param  {Mixed} oldValue
+ * @param  {Mixed} newValue
+ * @param  {boolean} deepCopy
+ * @return {Mixed}
+ */
+function patch(oldValue, newValue, deepCopy) {
+  var i = void 0;
+  var j = void 0;
+  if (oldValue === null || newValue === null) {
+    return newValue;
+  } else if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+    var arr = void 0;
+    for (i = 0; i < newValue.length; i++) {
+      var value = patch(oldValue[i], newValue[i], false);
+      if (!arr) {
+        if (value === oldValue[i]) {
+          continue;
+        }
+        arr = [];
+        for (j = 0; j < i; ++j) {
+          arr[j] = oldValue[j];
+        }
+      }
+      arr[i] = value;
+    }
+    arr = arr && deepCopy !== false ? utils.deepCopy(arr) : arr;
+    arr = arr || (oldValue.length === newValue.length ? oldValue : newValue);
+    return arr;
+  } else if (!Array.isArray(newValue) && (typeof oldValue === 'undefined' ? 'undefined' : _typeof(oldValue)) === 'object' && (typeof newValue === 'undefined' ? 'undefined' : _typeof(newValue)) === 'object') {
+    var obj = void 0;
+    var props = Object.keys(newValue);
+    for (i = 0; i < props.length; i++) {
+      var _value = patch(oldValue[props[i]], newValue[props[i]], false);
+      if (!obj) {
+        if (_value === oldValue[props[i]]) {
+          continue;
+        }
+        obj = Object.create(null);
+        for (j = 0; j < i; ++j) {
+          obj[props[j]] = oldValue[props[j]];
+        }
+      }
+      obj[props[i]] = newValue[props[i]];
+    }
+    obj = obj && deepCopy !== false ? utils.deepCopy(obj) : obj;
+    obj = obj || (Object.keys(oldValue).length === props.length ? oldValue : newValue);
+    return obj;
+  } else if (newValue !== oldValue) {
+    return deepCopy !== false ? utils.deepCopy(newValue) : newValue;
+  }
+
+  return oldValue;
+}
+
+/**
+ * Parses the path. Splits it into
+ * keys for objects and indices for arrays.
+ *
+ * @returns Array of tokens
+ */
+function tokenize(path) {
+  if (cache[path]) {
+    return cache[path];
+  }
+
+  var parts = String(path) !== 'undefined' ? String(path).match(PARTS_REG_EXP) : [];
+
+  if (!parts) {
+    throw new Error('invalid path ' + path);
+  }
+
+  cache[path] = parts;
+  return cache[path];
+}
+},{"../utils/utils":35}],25:[function(require,module,exports){
+'use strict';
+/* eslint-disable prefer-rest-params */
+
+var EventEmitter = require('component-emitter2');
+var Record = require('./record');
+var C = require('../constants/constants');
+
+var ENTRY_ADDED_EVENT = 'entry-added';
+var ENTRY_REMOVED_EVENT = 'entry-removed';
+var ENTRY_MOVED_EVENT = 'entry-moved';
+
+/**
+ * A List is a specialised Record that contains
+ * an Array of recordNames and provides a number
+ * of convinience methods for interacting with them.
+ *
+ * @param {RecordHanlder} recordHandler
+ * @param {String} name    The name of the list
+ *
+ * @constructor
+ */
+var List = function List(recordHandler, name, options) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+
+  this._recordHandler = recordHandler;
+  this._record = this._recordHandler.getRecord(name, options);
+  this._record._applyUpdate = this._applyUpdate.bind(this);
+
+  this._record.on('delete', this.emit.bind(this, 'delete'));
+  this._record.on('discard', this._onDiscard.bind(this));
+  this._record.on('ready', this._onReady.bind(this));
+
+  this.isDestroyed = this._record.isDestroyed;
+  this.isReady = this._record.isReady;
+  this.name = name;
+  this._queuedMethods = [];
+  this._beforeStructure = null;
+  this._hasAddListener = null;
+  this._hasRemoveListener = null;
+  this._hasMoveListener = null;
+
+  this.delete = this._record.delete.bind(this._record);
+  this.discard = this._record.discard.bind(this._record);
+  this.whenReady = this._record.whenReady.bind(this);
+};
+
+EventEmitter(List.prototype); // eslint-disable-line
+
+/**
+ * Returns the array of list entries or an
+ * empty array if the list hasn't been populated yet.
+ *
+ * @public
+ * @returns {Array} entries
+ */
+List.prototype.getEntries = function () {
+  var entries = this._record.get();
+
+  if (!(entries instanceof Array)) {
+    return [];
+  }
+
+  return entries;
+};
+
+/**
+ * Returns true if the list is empty
+ *
+ * @public
+ * @returns {Boolean} isEmpty
+ */
+List.prototype.isEmpty = function () {
+  return this.getEntries().length === 0;
+};
+
+/**
+ * Updates the list with a new set of entries
+ *
+ * @public
+ * @param {Array} entries
+ */
+List.prototype.setEntries = function (entries) {
+  var errorMsg = 'entries must be an array of record names';
+  var i = void 0;
+
+  if (!(entries instanceof Array)) {
+    throw new Error(errorMsg);
+  }
+
+  for (i = 0; i < entries.length; i++) {
+    if (typeof entries[i] !== 'string') {
+      throw new Error(errorMsg);
+    }
+  }
+
+  if (this._record.isReady === false) {
+    this._queuedMethods.push(this.setEntries.bind(this, entries));
+  } else {
+    this._beforeChange();
+    this._record.set(entries);
+    this._afterChange();
+  }
+};
+
+/**
+ * Removes an entry from the list
+ *
+ * @param {String} entry
+ * @param {Number} [index]
+ *
+ * @public
+ * @returns {void}
+ */
+List.prototype.removeEntry = function (entry, index) {
+  if (this._record.isReady === false) {
+    this._queuedMethods.push(this.removeEntry.bind(this, entry, index));
+    return;
+  }
+
+  var currentEntries = this._record.get();
+  var hasIndex = this._hasIndex(index);
+  var entries = [];
+  var i = void 0;
+
+  for (i = 0; i < currentEntries.length; i++) {
+    if (currentEntries[i] !== entry || hasIndex && index !== i) {
+      entries.push(currentEntries[i]);
+    }
+  }
+  this._beforeChange();
+  this._record.set(entries);
+  this._afterChange();
+};
+
+/**
+ * Adds an entry to the list
+ *
+ * @param {String} entry
+ * @param {Number} [index]
+ *
+ * @public
+ * @returns {void}
+ */
+List.prototype.addEntry = function (entry, index) {
+  if (typeof entry !== 'string') {
+    throw new Error('Entry must be a recordName');
+  }
+
+  if (this._record.isReady === false) {
+    this._queuedMethods.push(this.addEntry.bind(this, entry, index));
+    return;
+  }
+
+  var hasIndex = this._hasIndex(index);
+  var entries = this.getEntries();
+  if (hasIndex) {
+    entries.splice(index, 0, entry);
+  } else {
+    entries.push(entry);
+  }
+  this._beforeChange();
+  this._record.set(entries);
+  this._afterChange();
+};
+
+/**
+ * Proxies the underlying Record's subscribe method. Makes sure
+ * that no path is provided
+ *
+ * @public
+ * @returns {void}
+ */
+List.prototype.subscribe = function () {
+  var parameters = Record.prototype._normalizeArguments(arguments);
+
+  if (parameters.path) {
+    throw new Error('path is not supported for List.subscribe');
+  }
+
+  // Make sure the callback is invoked with an empty array for new records
+  var listCallback = function (callback) {
+    callback(this.getEntries());
+  }.bind(this, parameters.callback);
+
+  /**
+  * Adding a property onto a function directly is terrible practice,
+  * and we will change this as soon as we have a more seperate approach
+  * of creating lists that doesn't have records default state.
+  *
+  * The reason we are holding a referencing to wrapped array is so that
+  * on unsubscribe it can provide a reference to the actual method the
+  * record is subscribed too.
+  **/
+  parameters.callback.wrappedCallback = listCallback;
+  parameters.callback = listCallback;
+
+  this._record.subscribe(parameters);
+};
+
+/**
+ * Proxies the underlying Record's unsubscribe method. Makes sure
+ * that no path is provided
+ *
+ * @public
+ * @returns {void}
+ */
+List.prototype.unsubscribe = function () {
+  var parameters = Record.prototype._normalizeArguments(arguments);
+
+  if (parameters.path) {
+    throw new Error('path is not supported for List.unsubscribe');
+  }
+
+  parameters.callback = parameters.callback.wrappedCallback;
+  this._record.unsubscribe(parameters);
+};
+
+/**
+ * Listens for changes in the Record's ready state
+ * and applies them to this list
+ *
+ * @private
+ * @returns {void}
+ */
+List.prototype._onReady = function () {
+  this.isReady = true;
+
+  for (var i = 0; i < this._queuedMethods.length; i++) {
+    this._queuedMethods[i]();
+  }
+
+  this._queuedMethods = [];
+  this.emit('ready');
+};
+
+/**
+ * Listens for the record discard event and applies
+ * changes to list
+ *
+ * @private
+ * @returns {void}
+ */
+List.prototype._onDiscard = function () {
+  this.isDestroyed = true;
+  this.emit('discard');
+};
+
+/**
+ * Proxies the underlying Record's _update method. Set's
+ * data to an empty array if no data is provided.
+ *
+ * @param   {null}   path must (should :-)) be null
+ * @param   {Array}  data
+ *
+ * @private
+ * @returns {void}
+ */
+List.prototype._applyUpdate = function (message) {
+  if (message.action === C.ACTIONS.PATCH) {
+    throw new Error('PATCH is not supported for Lists');
+  }
+
+  if (message.data[2].charAt(0) !== '[') {
+    message.data[2] = '[]';
+  }
+
+  this._beforeChange();
+  Record.prototype._applyUpdate.call(this._record, message);
+  this._afterChange();
+};
+
+/**
+ * Validates that the index provided is within the current set of entries.
+ *
+ * @param {Number} index
+ *
+ * @private
+ * @returns {Number}
+ */
+List.prototype._hasIndex = function (index) {
+  var hasIndex = false;
+  var entries = this.getEntries();
+  if (index !== undefined) {
+    if (isNaN(index)) {
+      throw new Error('Index must be a number');
+    }
+    if (index !== entries.length && (index >= entries.length || index < 0)) {
+      throw new Error('Index must be within current entries');
+    }
+    hasIndex = true;
+  }
+  return hasIndex;
+};
+
+/**
+ * Establishes the current structure of the list, provided the client has attached any
+ * add / move / remove listener
+ *
+ * This will be called before any change to the list, regardsless if the change was triggered
+ * by an incoming message from the server or by the client
+ *
+ * @private
+ * @returns {void}
+ */
+List.prototype._beforeChange = function () {
+  this._hasAddListener = this.listeners(ENTRY_ADDED_EVENT).length > 0;
+  this._hasRemoveListener = this.listeners(ENTRY_REMOVED_EVENT).length > 0;
+  this._hasMoveListener = this.listeners(ENTRY_MOVED_EVENT).length > 0;
+
+  if (this._hasAddListener || this._hasRemoveListener || this._hasMoveListener) {
+    this._beforeStructure = this._getStructure();
+  } else {
+    this._beforeStructure = null;
+  }
+};
+
+/**
+ * Compares the structure of the list after a change to its previous structure and notifies
+ * any add / move / remove listener. Won't do anything if no listeners are attached.
+ *
+ * @private
+ * @returns {void}
+ */
+List.prototype._afterChange = function () {
+  if (this._beforeStructure === null) {
+    return;
+  }
+
+  var after = this._getStructure();
+  var before = this._beforeStructure;
+  var entry = void 0;
+  var i = void 0;
+
+  if (this._hasRemoveListener) {
+    for (entry in before) {
+      for (i = 0; i < before[entry].length; i++) {
+        if (after[entry] === undefined || after[entry][i] === undefined) {
+          this.emit(ENTRY_REMOVED_EVENT, entry, before[entry][i]);
+        }
+      }
+    }
+  }
+
+  if (this._hasAddListener || this._hasMoveListener) {
+    for (entry in after) {
+      if (before[entry] === undefined) {
+        for (i = 0; i < after[entry].length; i++) {
+          this.emit(ENTRY_ADDED_EVENT, entry, after[entry][i]);
+        }
+      } else {
+        for (i = 0; i < after[entry].length; i++) {
+          if (before[entry][i] !== after[entry][i]) {
+            if (before[entry][i] === undefined) {
+              this.emit(ENTRY_ADDED_EVENT, entry, after[entry][i]);
+            } else {
+              this.emit(ENTRY_MOVED_EVENT, entry, after[entry][i]);
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
+/**
+ * Iterates through the list and creates a map with the entry as a key
+ * and an array of its position(s) within the list as a value, e.g.
+ *
+ * {
+ *   'recordA': [ 0, 3 ],
+ *   'recordB': [ 1 ],
+ *   'recordC': [ 2 ]
+ * }
+ *
+ * @private
+ * @returns {Array} structure
+ */
+List.prototype._getStructure = function () {
+  var structure = {};
+  var i = void 0;
+  var entries = this._record.get();
+
+  for (i = 0; i < entries.length; i++) {
+    if (structure[entries[i]] === undefined) {
+      structure[entries[i]] = [i];
+    } else {
+      structure[entries[i]].push(i);
+    }
+  }
+
+  return structure;
+};
+
+module.exports = List;
+},{"../constants/constants":15,"./record":27,"component-emitter2":11}],26:[function(require,module,exports){
+'use strict';
+
+var Record = require('./record');
+var AnonymousRecord = require('./anonymous-record');
+var List = require('./list');
+var Listener = require('../utils/listener');
+var SingleNotifier = require('../utils/single-notifier');
+var C = require('../constants/constants');
+var messageParser = require('../message/message-parser');
+var EventEmitter = require('component-emitter2');
+
+/**
+ * A collection of factories for records. This class
+ * is exposed as client.record
+ *
+ * @param {Object} options    deepstream options
+ * @param {Connection} connection
+ * @param {Client} client
+ */
+var RecordHandler = function RecordHandler(options, connection, client) {
+  this._options = options;
+  this._connection = connection;
+  this._client = client;
+  this._records = {};
+  this._lists = {};
+  this._listener = {};
+  this._destroyEventEmitter = new EventEmitter();
+
+  this._hasRegistry = new SingleNotifier(client, connection, C.TOPIC.RECORD, C.ACTIONS.HAS, this._options.recordReadTimeout);
+  this._snapshotRegistry = new SingleNotifier(client, connection, C.TOPIC.RECORD, C.ACTIONS.SNAPSHOT, this._options.recordReadTimeout);
+};
+
+/**
+ * Returns an existing record or creates a new one.
+ *
+ * @param   {String} name              the unique name of the record
+ * @param   {[Object]} recordOptions   A map of parameters for this particular record.
+ *                                      { persist: true }
+ *
+ * @public
+ * @returns {Record}
+ */
+RecordHandler.prototype.getRecord = function (name, recordOptions) {
+  if (!this._records[name]) {
+    this._records[name] = new Record(name, recordOptions || {}, this._connection, this._options, this._client);
+    this._records[name].on('error', this._onRecordError.bind(this, name));
+    this._records[name].on('destroyPending', this._onDestroyPending.bind(this, name));
+    this._records[name].on('delete', this._removeRecord.bind(this, name));
+    this._records[name].on('discard', this._removeRecord.bind(this, name));
+  }
+
+  this._records[name].usages++;
+
+  return this._records[name];
+};
+
+/**
+ * Returns an existing List or creates a new one. A list is a specialised
+ * type of record that holds an array of recordNames.
+ *
+ * @param   {String} name       the unique name of the list
+ * @param   {[Object]} options   A map of parameters for this particular list.
+ *                              { persist: true }
+ *
+ * @public
+ * @returns {List}
+ */
+RecordHandler.prototype.getList = function (name, options) {
+  if (!this._lists[name]) {
+    this._lists[name] = new List(this, name, options);
+  } else {
+    this._records[name].usages++;
+  }
+  return this._lists[name];
+};
+
+/**
+ * Returns an anonymous record. A anonymous record is effectively
+ * a wrapper that mimicks the API of a record, but allows for the
+ * underlying record to be swapped without loosing subscriptions etc.
+ *
+ * This is particularly useful when selecting from a number of similarly
+ * structured records. E.g. a list of users that can be choosen from a list
+ *
+ * The only API difference to a normal record is an additional setName( name ) method.
+ *
+ *
+ * @public
+ * @returns {AnonymousRecord}
+ */
+RecordHandler.prototype.getAnonymousRecord = function () {
+  return new AnonymousRecord(this);
+};
+
+/**
+ * Allows to listen for record subscriptions made by this or other clients. This
+ * is useful to create "active" data providers, e.g. providers that only provide
+ * data for a particular record if a user is actually interested in it
+ *
+ * @param   {String}   pattern  A combination of alpha numeric characters and wildcards( * )
+ * @param   {Function} callback
+ *
+ * @public
+ * @returns {void}
+ */
+RecordHandler.prototype.listen = function (pattern, callback) {
+  if (typeof pattern !== 'string' || pattern.length === 0) {
+    throw new Error('invalid argument pattern');
+  }
+  if (typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  if (this._listener[pattern] && !this._listener[pattern].destroyPending) {
+    this._client._$onError(C.TOPIC.RECORD, C.EVENT.LISTENER_EXISTS, pattern);
+    return;
+  }
+
+  if (this._listener[pattern]) {
+    this._listener[pattern].destroy();
+  }
+
+  this._listener[pattern] = new Listener(C.TOPIC.RECORD, pattern, callback, this._options, this._client, this._connection);
+};
+
+/**
+ * Removes a listener that was previously registered with listenForSubscriptions
+ *
+ * @param   {String}   pattern  A combination of alpha numeric characters and wildcards( * )
+ * @param   {Function} callback
+ *
+ * @public
+ * @returns {void}
+ */
+RecordHandler.prototype.unlisten = function (pattern) {
+  if (typeof pattern !== 'string' || pattern.length === 0) {
+    throw new Error('invalid argument pattern');
+  }
+
+  var listener = this._listener[pattern];
+  if (listener && !listener.destroyPending) {
+    listener.sendDestroy();
+  } else if (this._listener[pattern]) {
+    this._listener[pattern].destroy();
+    delete this._listener[pattern];
+  } else {
+    this._client._$onError(C.TOPIC.RECORD, C.EVENT.NOT_LISTENING, pattern);
+  }
+};
+
+/**
+ * Retrieve the current record data without subscribing to changes
+ *
+ * @param   {String}  name the unique name of the record
+ * @param   {Function}  callback
+ *
+ * @public
+ */
+RecordHandler.prototype.snapshot = function (name, callback) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+
+  if (this._records[name] && this._records[name].isReady) {
+    callback(null, this._records[name].get());
+  } else {
+    this._snapshotRegistry.request(name, callback);
+  }
+};
+
+/**
+ * Allows the user to query to see whether or not the record exists.
+ *
+ * @param   {String}  name the unique name of the record
+ * @param   {Function}  callback
+ *
+ * @public
+ */
+RecordHandler.prototype.has = function (name, callback) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+
+  if (this._records[name]) {
+    callback(null, true);
+  } else {
+    this._hasRegistry.request(name, callback);
+  }
+};
+
+/**
+ * Will be called by the client for incoming messages on the RECORD topic
+ *
+ * @param   {Object} message parsed and validated deepstream message
+ *
+ * @package private
+ * @returns {void}
+ */
+RecordHandler.prototype._$handle = function (message) {
+  var name = void 0;
+
+  if (message.action === C.ACTIONS.ERROR && message.data[0] !== C.EVENT.VERSION_EXISTS && message.data[0] !== C.ACTIONS.SNAPSHOT && message.data[0] !== C.ACTIONS.HAS && message.data[0] !== C.EVENT.MESSAGE_DENIED) {
+    message.processedError = true;
+    this._client._$onError(C.TOPIC.RECORD, message.data[0], message.data[1]);
+    return;
+  }
+
+  if (message.action === C.ACTIONS.ACK || message.action === C.ACTIONS.ERROR) {
+    name = message.data[1];
+
+    /*
+     * The following prevents errors that occur when a record is discarded or deleted and
+     * recreated before the discard / delete ack message is received.
+     *
+     * A (presumably unsolvable) problem remains when a client deletes a record in the exact moment
+     * between another clients creation and read message for the same record
+     */
+    if (message.data[0] === C.ACTIONS.DELETE || message.data[0] === C.ACTIONS.UNSUBSCRIBE || message.data[0] === C.EVENT.MESSAGE_DENIED && message.data[2] === C.ACTIONS.DELETE) {
+      this._destroyEventEmitter.emit('destroy_ack_' + name, message);
+
+      if (message.data[0] === C.ACTIONS.DELETE && this._records[name]) {
+        this._records[name]._$onMessage(message);
+      }
+
+      return;
+    }
+
+    if (message.data[0] === C.ACTIONS.SNAPSHOT) {
+      message.processedError = true;
+      this._snapshotRegistry.recieve(name, message.data[2]);
+      return;
+    }
+
+    if (message.data[0] === C.ACTIONS.HAS) {
+      message.processedError = true;
+      this._snapshotRegistry.recieve(name, message.data[2]);
+      return;
+    }
+  } else {
+    name = message.data[0];
+  }
+
+  var processed = false;
+
+  if (this._records[name]) {
+    processed = true;
+    this._records[name]._$onMessage(message);
+  }
+
+  if (message.action === C.ACTIONS.READ && this._snapshotRegistry.hasRequest(name)) {
+    processed = true;
+    this._snapshotRegistry.recieve(name, null, JSON.parse(message.data[2]));
+  }
+
+  if (message.action === C.ACTIONS.HAS && this._hasRegistry.hasRequest(name)) {
+    processed = true;
+    this._hasRegistry.recieve(name, null, messageParser.convertTyped(message.data[1]));
+  }
+
+  if (message.action === C.ACTIONS.ACK && message.data[0] === C.ACTIONS.UNLISTEN && this._listener[name] && this._listener[name].destroyPending) {
+    processed = true;
+    this._listener[name].destroy();
+    delete this._listener[name];
+  } else if (this._listener[name]) {
+    processed = true;
+    this._listener[name]._$onMessage(message);
+  } else if (message.action === C.ACTIONS.SUBSCRIPTION_FOR_PATTERN_REMOVED) {
+    // An unlisten ACK was received before an PATTERN_REMOVED which is a valid case
+    processed = true;
+  } else if (message.action === C.ACTIONS.SUBSCRIPTION_HAS_PROVIDER) {
+    // record can receive a HAS_PROVIDER after discarding the record
+    processed = true;
+  }
+
+  if (!processed) {
+    message.processedError = true;
+    this._client._$onError(C.TOPIC.RECORD, C.EVENT.UNSOLICITED_MESSAGE, name);
+  }
+};
+
+/**
+ * Callback for 'error' events from the record.
+ *
+ * @param   {String} recordName
+ * @param   {String} error
+ *
+ * @private
+ * @returns {void}
+ */
+RecordHandler.prototype._onRecordError = function (recordName, error) {
+  this._client._$onError(C.TOPIC.RECORD, error, recordName);
+};
+
+/**
+ * When the client calls discard or delete on a record, there is a short delay
+ * before the corresponding ACK message is received from the server. To avoid
+ * race conditions if the record is re-requested straight away the old record is
+ * removed from the cache straight awy and will only listen for one last ACK message
+ *
+ * @param   {String} recordName The name of the record that was just deleted / discarded
+ *
+ * @private
+ * @returns {void}
+ */
+RecordHandler.prototype._onDestroyPending = function (recordName) {
+  if (!this._records[recordName]) {
+    this._client._$onError(C.TOPIC.RECORD, 'Record attempted to be destroyed but does not exists', recordName);
+    return;
+  }
+  var onMessage = this._records[recordName]._$onMessage.bind(this._records[recordName]);
+  this._destroyEventEmitter.once('destroy_ack_' + recordName, onMessage);
+  this._removeRecord(recordName);
+};
+
+/**
+ * Callback for 'deleted' and 'discard' events from a record. Removes the record from
+ * the registry
+ *
+ * @param   {String} recordName
+ *
+ * @returns {void}
+ */
+RecordHandler.prototype._removeRecord = function (recordName) {
+  delete this._records[recordName];
+  delete this._lists[recordName];
+};
+
+module.exports = RecordHandler;
+},{"../constants/constants":15,"../message/message-parser":21,"../utils/listener":32,"../utils/single-notifier":34,"./anonymous-record":23,"./list":25,"./record":27,"component-emitter2":11}],27:[function(require,module,exports){
+'use strict';
+/* eslint-disable prefer-spread, prefer-rest-params */
+
+var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
+
+var jsonPath = require('./json-path');
+var ResubscribeNotifier = require('../utils/resubscribe-notifier');
+var EventEmitter = require('component-emitter2');
+var C = require('../constants/constants');
+var messageBuilder = require('../message/message-builder');
+var messageParser = require('../message/message-parser');
+var utils = require('../utils/utils');
+
+/**
+ * This class represents a single record - an observable
+ * dataset returned by client.record.getRecord()
+ *
+ * @extends {EventEmitter}
+ *
+ * @param {String} name              The unique name of the record
+ * @param {Object} recordOptions     A map of options, e.g. { persist: true }
+ * @param {Connection} Connection    The instance of the server connection
+ * @param {Object} options        Deepstream options
+ * @param {Client} client        deepstream.io client
+ *
+ * @constructor
+ */
+var Record = function Record(name, recordOptions, connection, options, client) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+
+  this.name = name;
+  this.usages = 0;
+  this._recordOptions = recordOptions;
+  this._connection = connection;
+  this._client = client;
+  this._options = options;
+  this.isReady = false;
+  this.isDestroyed = false;
+  this.hasProvider = false;
+  this._$data = Object.create(null);
+  this.version = null;
+  this._eventEmitter = new EventEmitter();
+  this._queuedMethodCalls = [];
+  this._writeCallbacks = {};
+
+  this._mergeStrategy = null;
+  if (options.mergeStrategy) {
+    this.setMergeStrategy(options.mergeStrategy);
+  }
+
+  this._ackTimeoutRegistry = client._$getAckTimeoutRegistry();
+  this._resubscribeNotifier = new ResubscribeNotifier(this._client, this._sendRead.bind(this));
+
+  this._readAckTimeout = this._ackTimeoutRegistry.add({
+    topic: C.TOPIC.RECORD,
+    name: name,
+    action: C.ACTIONS.SUBSCRIBE,
+    timeout: this._options.recordReadAckTimeout
+  });
+  this._responseTimeout = this._ackTimeoutRegistry.add({
+    topic: C.TOPIC.RECORD,
+    name: name,
+    action: C.ACTIONS.READ,
+    event: C.EVENT.RESPONSE_TIMEOUT,
+    timeout: this._options.recordReadTimeout
+  });
+  this._sendRead();
+};
+
+EventEmitter(Record.prototype); // eslint-disable-line
+
+/**
+ * Set a merge strategy to resolve any merge conflicts that may occur due
+ * to offline work or write conflicts. The function will be called with the
+ * local record, the remote version/data and a callback to call once the merge has
+ * completed or if an error occurs ( which leaves it in an inconsistent state until
+ * the next update merge attempt ).
+ *
+ * @param   {Function} mergeStrategy A Function that can resolve merge issues.
+ *
+ * @public
+ * @returns {void}
+ */
+Record.prototype.setMergeStrategy = function (mergeStrategy) {
+  if (typeof mergeStrategy === 'function') {
+    this._mergeStrategy = mergeStrategy;
+  } else {
+    throw new Error('Invalid merge strategy: Must be a Function');
+  }
+};
+
+/**
+ * Returns a copy of either the entire dataset of the record
+ * or - if called with a path - the value of that path within
+ * the record's dataset.
+ *
+ * Returning a copy rather than the actual value helps to prevent
+ * the record getting out of sync due to unintentional changes to
+ * its data
+ *
+ * @param   {[String]} path A JSON path, e.g. users[ 2 ].firstname
+ *
+ * @public
+ * @returns {Mixed} value
+ */
+Record.prototype.get = function (path) {
+  return jsonPath.get(this._$data, path, this._options.recordDeepCopy);
+};
+
+/**
+ * Sets the value of either the entire dataset
+ * or of a specific path within the record
+ * and submits the changes to the server
+ *
+ * If the new data is equal to the current data, nothing will happen
+ *
+ * @param {[String|Object]} pathOrData Either a JSON path when called with
+ *                                     two arguments or the data itself
+ * @param {Object} data     The data that should be stored in the record
+ *
+ * @public
+ * @returns {void}
+ */
+Record.prototype.set = function (pathOrData, dataOrCallback, callback) {
+  var path = void 0;
+  var data = void 0;
+  if (arguments.length === 1) {
+    // set( object )
+    if ((typeof pathOrData === 'undefined' ? 'undefined' : _typeof(pathOrData)) !== 'object') {
+      throw new Error('invalid argument data');
+    }
+    data = pathOrData;
+  } else if (arguments.length === 2) {
+    if (typeof pathOrData === 'string' && pathOrData.length !== 0 && typeof dataOrCallback !== 'function') {
+      // set( path, data )
+      path = pathOrData;
+      data = dataOrCallback;
+    } else if ((typeof pathOrData === 'undefined' ? 'undefined' : _typeof(pathOrData)) === 'object' && typeof dataOrCallback === 'function') {
+      // set( data, callback )
+      data = pathOrData;
+      callback = dataOrCallback; // eslint-disable-line
+    } else {
+      throw new Error('invalid argument path');
+    }
+  } else if (arguments.length === 3) {
+    // set( path, data, callback )
+    if (typeof pathOrData !== 'string' || pathOrData.length === 0 || typeof callback !== 'function') {
+      throw new Error('invalid arguments, must pass in a string, a value and a function');
+    }
+    path = pathOrData;
+    data = dataOrCallback;
+  }
+
+  if (!path && (data === null || (typeof data === 'undefined' ? 'undefined' : _typeof(data)) !== 'object')) {
+    throw new Error('invalid arguments, scalar values cannot be set without path');
+  }
+
+  if (this._checkDestroyed('set')) {
+    return this;
+  }
+
+  if (!this.isReady) {
+    this._queuedMethodCalls.push({ method: 'set', args: arguments });
+    return this;
+  }
+
+  var oldValue = this._$data;
+  var newValue = jsonPath.set(oldValue, path, data, this._options.recordDeepCopy);
+
+  if (oldValue === newValue) {
+    if (typeof callback === 'function') {
+      var errorMessage = null;
+      if (!utils.isConnected(this._client)) {
+        errorMessage = 'Connection error: error updating record as connection was closed';
+      }
+      utils.requestIdleCallback(function () {
+        return callback(errorMessage);
+      });
+    }
+    return this;
+  }
+
+  var config = void 0;
+  if (typeof callback === 'function') {
+    config = {};
+    config.writeSuccess = true;
+    if (!utils.isConnected(this._client)) {
+      utils.requestIdleCallback(function () {
+        return callback('Connection error: error updating record as connection was closed');
+      });
+    } else {
+      this._setUpCallback(this.version, callback);
+    }
+  }
+  this._sendUpdate(path, data, config);
+  this._applyChange(newValue);
+  return this;
+};
+
+/**
+ * Subscribes to changes to the records dataset.
+ *
+ * Callback is the only mandatory argument.
+ *
+ * When called with a path, it will only subscribe to updates
+ * to that path, rather than the entire record
+ *
+ * If called with true for triggerNow, the callback will
+ * be called immediatly with the current value
+ *
+ * @param   {[String]}    path      A JSON path within the record to subscribe to
+ * @param   {Function}    callback         Callback function to notify on changes
+ * @param   {[Boolean]}   triggerNow      A flag to specify whether the callback should
+ *                                         be invoked immediatly with the current value
+ *
+ * @public
+ * @returns {void}
+ */
+// eslint-disable-next-line
+Record.prototype.subscribe = function (path, callback, triggerNow) {
+  var _this = this;
+
+  var args = this._normalizeArguments(arguments);
+
+  if (args.path !== undefined && (typeof args.path !== 'string' || args.path.length === 0)) {
+    throw new Error('invalid argument path');
+  }
+  if (typeof args.callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  if (this._checkDestroyed('subscribe')) {
+    return;
+  }
+
+  if (args.triggerNow) {
+    this.whenReady(function () {
+      _this._eventEmitter.on(args.path, args.callback);
+      args.callback(_this.get(args.path));
+    });
+  } else {
+    this._eventEmitter.on(args.path, args.callback);
+  }
+};
+
+/**
+ * Removes a subscription that was previously made using record.subscribe()
+ *
+ * Can be called with a path to remove the callback for this specific
+ * path or only with a callback which removes it from the generic subscriptions
+ *
+ * Please Note: unsubscribe is a purely client side operation. If the app is no longer
+ * interested in receiving updates for this record from the server it needs to call
+ * discard instead
+ *
+ * @param   {[String|Function]}   pathOrCallback A JSON path
+ * @param   {Function}         callback     The callback method. Please note, if a bound
+ *                                          method was passed to subscribe, the same method
+ *                                          must be passed to unsubscribe as well.
+ *
+ * @public
+ * @returns {void}
+ */
+// eslint-disable-next-line
+Record.prototype.unsubscribe = function (pathOrCallback, callback) {
+  var args = this._normalizeArguments(arguments);
+
+  if (args.path !== undefined && (typeof args.path !== 'string' || args.path.length === 0)) {
+    throw new Error('invalid argument path');
+  }
+  if (args.callback !== undefined && typeof args.callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  if (this._checkDestroyed('unsubscribe')) {
+    return;
+  }
+  this._eventEmitter.off(args.path, args.callback);
+};
+
+/**
+ * Removes all change listeners and notifies the server that the client is
+ * no longer interested in updates for this record
+ *
+ * @public
+ * @returns {void}
+ */
+Record.prototype.discard = function () {
+  var _this2 = this;
+
+  if (this._checkDestroyed('discard')) {
+    return;
+  }
+  this.whenReady(function () {
+    _this2.usages--;
+    if (_this2.usages <= 0) {
+      _this2.emit('destroyPending');
+      _this2._discardTimeout = _this2._ackTimeoutRegistry.add({
+        topic: C.TOPIC.RECORD,
+        name: _this2.name,
+        action: C.ACTIONS.UNSUBSCRIBE
+      });
+      _this2._connection.sendMsg(C.TOPIC.RECORD, C.ACTIONS.UNSUBSCRIBE, [_this2.name]);
+    }
+  });
+};
+
+/**
+ * Deletes the record on the server.
+ *
+ * @public
+ * @returns {void}
+ */
+Record.prototype.delete = function () {
+  var _this3 = this;
+
+  if (this._checkDestroyed('delete')) {
+    return;
+  }
+  this.whenReady(function () {
+    _this3.emit('destroyPending');
+    _this3._deleteAckTimeout = _this3._ackTimeoutRegistry.add({
+      topic: C.TOPIC.RECORD,
+      name: _this3.name,
+      action: C.ACTIONS.DELETE,
+      event: C.EVENT.DELETE_TIMEOUT,
+      timeout: _this3._options.recordDeleteTimeout
+    });
+    _this3._connection.sendMsg(C.TOPIC.RECORD, C.ACTIONS.DELETE, [_this3.name]);
+  });
+};
+
+/**
+ * Convenience method, similar to promises. Executes callback
+ * whenever the record is ready, either immediatly or once the ready
+ * event is fired
+ *
+ * @param   {Function} callback Will be called when the record is ready
+ *
+ * @returns {void}
+ */
+Record.prototype.whenReady = function (callback) {
+  if (this.isReady === true) {
+    callback(this);
+  } else {
+    this.once('ready', callback.bind(this, this));
+  }
+};
+
+/**
+ * Callback for incoming messages from the message handler
+ *
+ * @param   {Object} message parsed and validated deepstream message
+ *
+ * @package private
+ * @returns {void}
+ */
+Record.prototype._$onMessage = function (message) {
+  if (message.action === C.ACTIONS.READ) {
+    if (this.version === null) {
+      this._ackTimeoutRegistry.clear(message);
+      this._onRead(message);
+    } else {
+      this._applyUpdate(message, this._client);
+    }
+  } else if (message.action === C.ACTIONS.ACK) {
+    this._processAckMessage(message);
+  } else if (message.action === C.ACTIONS.UPDATE || message.action === C.ACTIONS.PATCH) {
+    this._applyUpdate(message, this._client);
+  } else if (message.action === C.ACTIONS.WRITE_ACKNOWLEDGEMENT) {
+    var versions = JSON.parse(message.data[1]);
+    for (var i = 0; i < versions.length; i++) {
+      var callback = this._writeCallbacks[versions[i]];
+      if (callback !== undefined) {
+        callback(messageParser.convertTyped(message.data[2], this._client));
+        delete this._writeCallbacks[versions[i]];
+      }
+    }
+  } else if (message.data[0] === C.EVENT.VERSION_EXISTS) {
+    // Otherwise it should be an error, and dealt with accordingly
+    this._recoverRecord(message.data[2], JSON.parse(message.data[3]), message);
+  } else if (message.data[0] === C.EVENT.MESSAGE_DENIED) {
+    this._clearTimeouts();
+  } else if (message.action === C.ACTIONS.SUBSCRIPTION_HAS_PROVIDER) {
+    var hasProvider = messageParser.convertTyped(message.data[1], this._client);
+    this.hasProvider = hasProvider;
+    this.emit('hasProviderChanged', hasProvider);
+  }
+};
+
+/**
+ * Called when a merge conflict is detected by a VERSION_EXISTS error or if an update recieved
+ * is directly after the clients. If no merge strategy is configure it will emit a VERSION_EXISTS
+ * error and the record will remain in an inconsistent state.
+ *
+ * @param   {Number} remoteVersion The remote version number
+ * @param   {Object} remoteData The remote object data
+ * @param   {Object} message parsed and validated deepstream message
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._recoverRecord = function (remoteVersion, remoteData, message) {
+  message.processedError = true;
+  if (this._mergeStrategy) {
+    this._mergeStrategy(this, remoteData, remoteVersion, this._onRecordRecovered.bind(this, remoteVersion, remoteData, message));
+  } else {
+    this.emit('error', C.EVENT.VERSION_EXISTS, 'received update for ' + remoteVersion + ' but version is ' + this.version);
+  }
+};
+
+Record.prototype._sendUpdate = function (path, data, config) {
+  this.version++;
+  var msgData = void 0;
+  if (!path) {
+    msgData = config === undefined ? [this.name, this.version, data] : [this.name, this.version, data, config];
+    this._connection.sendMsg(C.TOPIC.RECORD, C.ACTIONS.UPDATE, msgData);
+  } else {
+    msgData = config === undefined ? [this.name, this.version, path, messageBuilder.typed(data)] : [this.name, this.version, path, messageBuilder.typed(data), config];
+    this._connection.sendMsg(C.TOPIC.RECORD, C.ACTIONS.PATCH, msgData);
+  }
+};
+
+/**
+ * Callback once the record merge has completed. If successful it will set the
+ * record state, else emit and error and the record will remain in an
+ * inconsistent state until the next update.
+ *
+ * @param   {Number} remoteVersion The remote version number
+ * @param   {Object} remoteData The remote object data
+ * @param   {Object} message parsed and validated deepstream message
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._onRecordRecovered = function (remoteVersion, remoteData, message, error, data) {
+  if (!error) {
+    var oldVersion = this.version;
+    this.version = remoteVersion;
+
+    var oldValue = this._$data;
+
+    if (utils.deepEquals(oldValue, remoteData)) {
+      return;
+    }
+
+    var newValue = jsonPath.set(oldValue, undefined, data, false);
+
+    if (utils.deepEquals(data, remoteData)) {
+      this._applyChange(data);
+
+      var callback = this._writeCallbacks[remoteVersion];
+      if (callback !== undefined) {
+        callback(null);
+        delete this._writeCallbacks[remoteVersion];
+      }
+      return;
+    }
+
+    var config = message.data[4];
+    if (config && JSON.parse(config).writeSuccess) {
+      var _callback = this._writeCallbacks[oldVersion];
+      delete this._writeCallbacks[oldVersion];
+      this._setUpCallback(this.version, _callback);
+    }
+    this._sendUpdate(undefined, data, config);
+    this._applyChange(newValue);
+  } else {
+    this.emit('error', C.EVENT.VERSION_EXISTS, 'received update for ' + remoteVersion + ' but version is ' + this.version);
+  }
+};
+
+/**
+ * Callback for ack-messages. Acks can be received for
+ * subscriptions, discards and deletes
+ *
+ * @param   {Object} message parsed and validated deepstream message
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._processAckMessage = function (message) {
+  var acknowledgedAction = message.data[0];
+
+  if (acknowledgedAction === C.ACTIONS.SUBSCRIBE) {
+    this._ackTimeoutRegistry.clear(message);
+  } else if (acknowledgedAction === C.ACTIONS.DELETE) {
+    this.emit('delete');
+    this._destroy();
+  } else if (acknowledgedAction === C.ACTIONS.UNSUBSCRIBE) {
+    this.emit('discard');
+    this._destroy();
+  }
+};
+
+/**
+ * Applies incoming updates and patches to the record's dataset
+ *
+ * @param   {Object} message parsed and validated deepstream message
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._applyUpdate = function (message) {
+  var version = parseInt(message.data[1], 10);
+  var data = void 0;
+  if (message.action === C.ACTIONS.PATCH) {
+    data = messageParser.convertTyped(message.data[3], this._client);
+  } else {
+    data = JSON.parse(message.data[2]);
+  }
+
+  if (this.version === null) {
+    this.version = version;
+  } else if (this.version + 1 !== version) {
+    if (message.action === C.ACTIONS.PATCH) {
+      /**
+      * Request a snapshot so that a merge can be done with the read reply which contains
+      * the full state of the record
+      **/
+      this._connection.sendMsg(C.TOPIC.RECORD, C.ACTIONS.SNAPSHOT, [this.name]);
+    } else {
+      this._recoverRecord(version, data, message);
+    }
+    return;
+  }
+
+  this.version = version;
+  this._applyChange(jsonPath.set(this._$data, message.action === C.ACTIONS.PATCH ? message.data[2] : undefined, data));
+};
+
+/**
+ * Callback for incoming read messages
+ *
+ * @param   {Object} message parsed and validated deepstream message
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._onRead = function (message) {
+  this.version = parseInt(message.data[1], 10);
+  this._applyChange(jsonPath.set(this._$data, undefined, JSON.parse(message.data[2])));
+  this._setReady();
+};
+
+/**
+ * Invokes method calls that where queued while the record wasn't ready
+ * and emits the ready event
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._setReady = function () {
+  this.isReady = true;
+  for (var i = 0; i < this._queuedMethodCalls.length; i++) {
+    this[this._queuedMethodCalls[i].method].apply(this, this._queuedMethodCalls[i].args);
+  }
+  this._queuedMethodCalls = [];
+  this.emit('ready');
+};
+
+Record.prototype._setUpCallback = function (currentVersion, callback) {
+  var newVersion = Number(this.version) + 1;
+  this._writeCallbacks[newVersion] = callback;
+};
+
+/**
+ * Sends the read message, either initially at record
+ * creation or after a lost connection has been re-established
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._sendRead = function () {
+  this._connection.sendMsg(C.TOPIC.RECORD, C.ACTIONS.CREATEORREAD, [this.name]);
+};
+
+/**
+ * Compares the new values for every path with the previously stored ones and
+ * updates the subscribers if the value has changed
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._applyChange = function (newData) {
+  if (this.isDestroyed) {
+    return;
+  }
+
+  var oldData = this._$data;
+  this._$data = newData;
+
+  var paths = this._eventEmitter.eventNames();
+  for (var i = 0; i < paths.length; i++) {
+    var newValue = jsonPath.get(newData, paths[i], false);
+    var oldValue = jsonPath.get(oldData, paths[i], false);
+
+    if (newValue !== oldValue) {
+      this._eventEmitter.emit(paths[i], this.get(paths[i]));
+    }
+  }
+};
+
+/**
+ * Creates a map based on the types of the provided arguments
+ *
+ * @param {Arguments} args
+ *
+ * @private
+ * @returns {Object} arguments map
+ */
+Record.prototype._normalizeArguments = function (args) {
+  // If arguments is already a map of normalized parameters
+  // (e.g. when called by AnonymousRecord), just return it.
+  if (args.length === 1 && _typeof(args[0]) === 'object') {
+    return args[0];
+  }
+
+  var result = Object.create(null);
+
+  for (var i = 0; i < args.length; i++) {
+    if (typeof args[i] === 'string') {
+      result.path = args[i];
+    } else if (typeof args[i] === 'function') {
+      result.callback = args[i];
+    } else if (typeof args[i] === 'boolean') {
+      result.triggerNow = args[i];
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Clears all timeouts that are set when the record is created
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._clearTimeouts = function () {
+  this._ackTimeoutRegistry.remove({ ackId: this._readAckTimeout, silent: true });
+  this._ackTimeoutRegistry.remove({ ackId: this._responseTimeout, silent: true });
+  this._ackTimeoutRegistry.remove({ ackId: this._deleteAckTimeout, silent: true });
+  this._ackTimeoutRegistry.remove({ ackId: this._discardTimeout, silent: true });
+};
+
+/**
+ * A quick check that's carried out by most methods that interact with the record
+ * to make sure it hasn't been destroyed yet - and to handle it gracefully if it has.
+ *
+ * @param   {String} methodName The name of the method that invoked this check
+ *
+ * @private
+ * @returns {Boolean} is destroyed
+ */
+Record.prototype._checkDestroyed = function (methodName) {
+  if (this.isDestroyed) {
+    this.emit('error', 'Can\'t invoke \'' + methodName + '\'. Record \'' + this.name + '\' is already destroyed');
+    return true;
+  }
+
+  return false;
+};
+
+/**
+ * Destroys the record and nulls all
+ * its dependencies
+ *
+ * @private
+ * @returns {void}
+ */
+Record.prototype._destroy = function () {
+  this._clearTimeouts();
+  this._eventEmitter.off();
+  this._resubscribeNotifier.destroy();
+  this.isDestroyed = true;
+  this.isReady = false;
+  this._client = null;
+  this._eventEmitter = null;
+  this._connection = null;
+};
+
+module.exports = Record;
+},{"../constants/constants":15,"../message/message-builder":20,"../message/message-parser":21,"../utils/resubscribe-notifier":33,"../utils/utils":35,"./json-path":24,"component-emitter2":11}],28:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+var ResubscribeNotifier = require('../utils/resubscribe-notifier');
+var RpcResponse = require('./rpc-response');
+var Rpc = require('./rpc');
+var messageParser = require('../message/message-parser');
+var messageBuilder = require('../message/message-builder');
+
+/**
+ * The main class for remote procedure calls
+ *
+ * Provides the rpc interface and handles incoming messages
+ * on the rpc topic
+ *
+ * @param {Object} options deepstream configuration options
+ * @param {Connection} connection
+ * @param {Client} client
+ *
+ * @constructor
+ * @public
+ */
+var RpcHandler = function RpcHandler(options, connection, client) {
+  this._options = options;
+  this._connection = connection;
+  this._client = client;
+  this._rpcs = {};
+  this._providers = {};
+  this._ackTimeoutRegistry = client._$getAckTimeoutRegistry();
+  this._resubscribeNotifier = new ResubscribeNotifier(this._client, this._reprovide.bind(this));
+};
+
+/**
+ * Registers a callback function as a RPC provider. If another connected client calls
+ * client.rpc.make() the request will be routed to this method
+ *
+ * The callback will be invoked with two arguments:
+ *     {Mixed} data The data passed to the client.rpc.make function
+ *     {RpcResponse} rpcResponse An object with methods to response,
+ *                               acknowledge or reject the request
+ *
+ * Only one callback can be registered for a RPC at a time
+ *
+ * Please note: Deepstream tries to deliver data in its original format.
+ * Data passed to client.rpc.make as a String will arrive as a String,
+ * numbers or implicitly JSON serialized objects will arrive in their
+ * respective format as well
+ *
+ * @public
+ * @returns void
+ */
+RpcHandler.prototype.provide = function (name, callback) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+  if (this._providers[name]) {
+    throw new Error('RPC ' + name + ' already registered');
+  }
+  if (typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  this._ackTimeoutRegistry.add({
+    topic: C.TOPIC.RPC,
+    name: name,
+    action: C.ACTIONS.SUBSCRIBE
+  });
+  this._providers[name] = callback;
+  this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.SUBSCRIBE, [name]);
+};
+
+/**
+ * Unregisters this client as a provider for a remote procedure call
+ *
+ * @param   {String} name the name of the rpc
+ *
+ * @public
+ * @returns {void}
+ */
+RpcHandler.prototype.unprovide = function (name) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+
+  if (this._providers[name]) {
+    delete this._providers[name];
+    this._ackTimeoutRegistry.add({
+      topic: C.TOPIC.RPC,
+      name: name,
+      action: C.ACTIONS.UNSUBSCRIBE
+    });
+    this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.UNSUBSCRIBE, [name]);
+  }
+};
+
+/**
+ * Executes the actual remote procedure call
+ *
+ * @param   {String}   name     The name of the rpc
+ * @param   {Mixed}    data     Serializable data that will be passed to the provider
+ * @param   {Function} callback Will be invoked with the returned result or if the rpc failed
+ *                              receives to arguments: error or null and the result
+ *
+ * @public
+ * @returns {void}
+ */
+RpcHandler.prototype.make = function (name, data, callback) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('invalid argument name');
+  }
+  if (typeof callback !== 'function') {
+    throw new Error('invalid argument callback');
+  }
+
+  var uid = this._client.getUid();
+  var typedData = messageBuilder.typed(data);
+
+  this._rpcs[uid] = new Rpc(name, callback, this._options, this._client);
+  this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.REQUEST, [name, uid, typedData]);
+};
+
+/**
+ * Retrieves a RPC instance for a correlationId or throws an error
+ * if it can't be found (which should never happen)
+ *
+ * @param {String} correlationId
+ * @param {String} rpcName
+ *
+ * @private
+ * @returns {Rpc}
+ */
+RpcHandler.prototype._getRpc = function (correlationId, rpcName, rawMessage) {
+  var rpc = this._rpcs[correlationId];
+
+  if (!rpc) {
+    this._client._$onError(C.TOPIC.RPC, C.EVENT.UNSOLICITED_MESSAGE, rawMessage);
+    return null;
+  }
+
+  return rpc;
+};
+
+/**
+ * Handles incoming rpc REQUEST messages. Instantiates a new response object
+ * and invokes the provider callback or rejects the request if no rpc provider
+ * is present (which shouldn't really happen, but might be the result of a race condition
+ * if this client sends a unprovide message whilst an incoming request is already in flight)
+ *
+ * @param   {Object} message The parsed deepstream RPC request message.
+ *
+ * @private
+ * @returns {void}
+ */
+RpcHandler.prototype._respondToRpc = function (message) {
+  var name = message.data[0];
+  var correlationId = message.data[1];
+  var data = null;
+  var response = void 0;
+
+  if (message.data[2]) {
+    data = messageParser.convertTyped(message.data[2], this._client);
+  }
+
+  if (this._providers[name]) {
+    response = new RpcResponse(this._connection, name, correlationId);
+    this._providers[name](data, response);
+  } else {
+    this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.REJECTION, [name, correlationId]);
+  }
+};
+
+/**
+ * Distributes incoming messages from the server
+ * based on their action
+ *
+ * @param   {Object} message A parsed deepstream message
+ *
+ * @private
+ * @returns {void}
+ */
+RpcHandler.prototype._$handle = function (message) {
+  var rpcName = void 0;
+  var correlationId = void 0;
+
+  // RPC Requests
+  if (message.action === C.ACTIONS.REQUEST) {
+    this._respondToRpc(message);
+    return;
+  }
+
+  // RPC subscription Acks
+  if (message.action === C.ACTIONS.ACK && (message.data[0] === C.ACTIONS.SUBSCRIBE || message.data[0] === C.ACTIONS.UNSUBSCRIBE)) {
+    this._ackTimeoutRegistry.clear(message);
+    return;
+  }
+
+  // handle auth/denied subscription errors
+  if (message.action === C.ACTIONS.ERROR) {
+    if (message.data[0] === C.EVENT.MESSAGE_PERMISSION_ERROR) {
+      return;
+    }
+    if (message.data[0] === C.EVENT.MESSAGE_DENIED && message.data[2] === C.ACTIONS.SUBSCRIBE) {
+      this._ackTimeoutRegistry.remove({
+        topic: C.TOPIC.RPC,
+        action: C.ACTIONS.SUBSCRIBE,
+        name: message.data[1]
+      });
+      return;
+    }
+  }
+
+  /*
+   * Error messages always have the error as first parameter. So the
+   * order is different to ack and response messages
+   */
+  if (message.action === C.ACTIONS.ERROR || message.action === C.ACTIONS.ACK) {
+    if (message.data[0] === C.EVENT.MESSAGE_DENIED && message.data[2] === C.ACTIONS.REQUEST) {
+      correlationId = message.data[3];
+    } else {
+      correlationId = message.data[2];
+    }
+    rpcName = message.data[1];
+  } else {
+    rpcName = message.data[0];
+    correlationId = message.data[1];
+  }
+
+  /*
+  * Retrieve the rpc object
+  */
+  var rpc = this._getRpc(correlationId, rpcName, message.raw);
+  if (rpc === null) {
+    return;
+  }
+
+  // RPC Responses
+  if (message.action === C.ACTIONS.ACK) {
+    rpc.ack();
+  } else if (message.action === C.ACTIONS.RESPONSE) {
+    rpc.respond(message.data[2]);
+    delete this._rpcs[correlationId];
+  } else if (message.action === C.ACTIONS.ERROR) {
+    message.processedError = true;
+    rpc.error(message.data[0]);
+    delete this._rpcs[correlationId];
+  }
+};
+
+/**
+ * Reregister providers to events when connection is lost
+ *
+ * @package private
+ * @returns {void}
+ */
+RpcHandler.prototype._reprovide = function () {
+  for (var rpcName in this._providers) {
+    this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.SUBSCRIBE, [rpcName]);
+  }
+};
+
+module.exports = RpcHandler;
+},{"../constants/constants":15,"../message/message-builder":20,"../message/message-parser":21,"../utils/resubscribe-notifier":33,"./rpc":30,"./rpc-response":29}],29:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+var utils = require('../utils/utils');
+var messageBuilder = require('../message/message-builder');
+
+/**
+ * This object provides a number of methods that allow a rpc provider
+ * to respond to a request
+ *
+ * @param {Connection} connection - the clients connection object
+ * @param {String} name the name of the rpc
+ * @param {String} correlationId the correlationId for the RPC
+ */
+var RpcResponse = function RpcResponse(connection, name, correlationId) {
+  this._connection = connection;
+  this._name = name;
+  this._correlationId = correlationId;
+  this._isAcknowledged = false;
+  this._isComplete = false;
+  this.autoAck = true;
+  utils.nextTick(this._performAutoAck.bind(this));
+};
+
+/**
+ * Acknowledges the receipt of the request. This
+ * will happen implicitly unless the request callback
+ * explicitly sets autoAck to false
+ *
+ * @public
+ * @returns   {void}
+ */
+RpcResponse.prototype.ack = function () {
+  if (this._isAcknowledged === false) {
+    this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.ACK, [C.ACTIONS.REQUEST, this._name, this._correlationId]);
+    this._isAcknowledged = true;
+  }
+};
+
+/**
+ * Reject the request. This might be necessary if the client
+ * is already processing a large number of requests. If deepstream
+ * receives a rejection message it will try to route the request to
+ * another provider - or return a NO_RPC_PROVIDER error if there are no
+ * providers left
+ *
+ * @public
+ * @returns  {void}
+ */
+RpcResponse.prototype.reject = function () {
+  this.autoAck = false;
+  this._isComplete = true;
+  this._isAcknowledged = true;
+  this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.REJECTION, [this._name, this._correlationId]);
+};
+
+/**
+ * Notifies the server that an error has occured while trying to process the request.
+ * This will complete the rpc.
+ *
+ * @param {String} errorMsg the message used to describe the error that occured
+ * @public
+ * @returns  {void}
+ */
+RpcResponse.prototype.error = function (errorMsg) {
+  this.autoAck = false;
+  this._isComplete = true;
+  this._isAcknowledged = true;
+  this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.ERROR, [errorMsg, this._name, this._correlationId]);
+};
+
+/**
+ * Completes the request by sending the response data
+ * to the server. If data is an array or object it will
+ * automatically be serialised.
+ * If autoAck is disabled and the response is sent before
+ * the ack message the request will still be completed and the
+ * ack message ignored
+ *
+ * @param {String} data the data send by the provider. Might be JSON serialized
+ *
+ * @public
+ * @returns {void}
+ */
+RpcResponse.prototype.send = function (data) {
+  if (this._isComplete === true) {
+    throw new Error('Rpc ' + this._name + ' already completed');
+  }
+  this.ack();
+
+  var typedData = messageBuilder.typed(data);
+  this._connection.sendMsg(C.TOPIC.RPC, C.ACTIONS.RESPONSE, [this._name, this._correlationId, typedData]);
+  this._isComplete = true;
+};
+
+/**
+ * Callback for the autoAck timeout. Executes ack
+ * if autoAck is not disabled
+ *
+ * @private
+ * @returns {void}
+ */
+RpcResponse.prototype._performAutoAck = function () {
+  if (this.autoAck === true) {
+    this.ack();
+  }
+};
+
+module.exports = RpcResponse;
+},{"../constants/constants":15,"../message/message-builder":20,"../utils/utils":35}],30:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+var messageParser = require('../message/message-parser');
+
+/**
+ * This class represents a single remote procedure
+ * call made from the client to the server. It's main function
+ * is to encapsulate the logic around timeouts and to convert the
+ * incoming response data
+ *
+ * @param {Object}   options           deepstream client config
+ * @param {Function} callback          the function that will be called once the request
+ *                                     is complete or failed
+ * @param {Client} client
+ *
+ * @constructor
+ */
+var Rpc = function Rpc(name, callback, options, client) {
+  this._options = options;
+  this._callback = callback;
+  this._client = client;
+  this._ackTimeoutRegistry = client._$getAckTimeoutRegistry();
+  this._ackTimeout = this._ackTimeoutRegistry.add({
+    topic: C.TOPIC.RPC,
+    action: C.ACTIONS.ACK,
+    name: name,
+    timeout: this._options.rpcAckTimeout,
+    callback: this.error.bind(this)
+  });
+  this._responseTimeout = this._ackTimeoutRegistry.add({
+    topic: C.TOPIC.RPC,
+    action: C.ACTIONS.REQUEST,
+    name: name,
+    event: C.EVENT.RESPONSE_TIMEOUT,
+    timeout: this._options.rpcResponseTimeout,
+    callback: this.error.bind(this)
+  });
+};
+
+/**
+ * Called once an ack message is received from the server
+ *
+ * @public
+ * @returns {void}
+ */
+Rpc.prototype.ack = function () {
+  this._ackTimeoutRegistry.remove({
+    ackId: this._ackTimeout
+  });
+};
+
+/**
+ * Called once a response message is received from the server.
+ * Converts the typed data and completes the request
+ *
+ * @param   {String} data typed value
+ *
+ * @public
+ * @returns {void}
+ */
+Rpc.prototype.respond = function (data) {
+  var convertedData = messageParser.convertTyped(data, this._client);
+  this._callback(null, convertedData);
+  this._complete();
+};
+
+/**
+ * Callback for error messages received from the server. Once
+ * an error is received the request is considered completed. Even
+ * if a response arrives later on it will be ignored / cause an
+ * UNSOLICITED_MESSAGE error
+ *
+ * @param   {String} errorMsg @TODO should be CODE and message
+ *
+ * @public
+ * @returns {void}
+ */
+Rpc.prototype.error = function (timeout) {
+  this._callback(timeout.event || timeout);
+  this._complete();
+};
+
+/**
+ * Called after either an error or a response
+ * was received
+ *
+ * @private
+ * @returns {void}
+ */
+Rpc.prototype._complete = function () {
+  this._ackTimeoutRegistry.remove({
+    ackId: this._ackTimeout
+  });
+  this._ackTimeoutRegistry.remove({
+    ackId: this._responseTimeout
+  });
+};
+
+module.exports = Rpc;
+},{"../constants/constants":15,"../message/message-parser":21}],31:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+var EventEmitter = require('component-emitter2');
+
+/**
+ * Subscriptions to events are in a pending state until deepstream acknowledges
+ * them. This is a pattern that's used by numerour classes. This registry aims
+ * to centralise the functionality necessary to keep track of subscriptions and
+ * their respective timeouts.
+ *
+ * @param {Client} client          The deepstream client
+ * @param {String} topic           Constant. One of C.TOPIC
+ * @param {Number} timeoutDuration The duration of the timeout in milliseconds
+ *
+ * @extends {EventEmitter}
+ * @constructor
+ */
+var AckTimeoutRegistry = function AckTimeoutRegistry(client, options) {
+  this._options = options;
+  this._client = client;
+  this._register = {};
+  this._counter = 1;
+  client.on('connectionStateChanged', this._onConnectionStateChanged.bind(this));
+};
+
+EventEmitter(AckTimeoutRegistry.prototype); // eslint-disable-line
+
+/**
+ * Add an entry
+ *
+ * @param {String} name An identifier for the subscription, e.g. a record name or an event name.
+ *
+ * @public
+ * @returns {Number} The timeout identifier
+ */
+AckTimeoutRegistry.prototype.add = function (timeout) {
+  var timeoutDuration = timeout.timeout || this._options.subscriptionTimeout;
+
+  if (this._client.getConnectionState() !== C.CONNECTION_STATE.OPEN || timeoutDuration < 1) {
+    return -1;
+  }
+
+  this.remove(timeout);
+  timeout.ackId = this._counter++;
+  timeout.event = timeout.event || C.EVENT.ACK_TIMEOUT;
+  timeout.__timeout = setTimeout(this._onTimeout.bind(this, timeout), timeoutDuration);
+  this._register[this._getUniqueName(timeout)] = timeout;
+  return timeout.ackId;
+};
+
+/**
+ * Remove an entry
+ *
+ * @param {String} name An identifier for the subscription, e.g. a record name or an event name.
+ *
+ * @public
+ * @returns {void}
+ */
+AckTimeoutRegistry.prototype.remove = function (timeout) {
+  if (timeout.ackId) {
+    for (var uniqueName in this._register) {
+      if (timeout.ackId === this._register[uniqueName].ackId) {
+        this.clear({
+          topic: this._register[uniqueName].topic,
+          action: this._register[uniqueName].action,
+          data: [this._register[uniqueName].name]
+        });
+      }
+    }
+  }
+
+  if (this._register[this._getUniqueName(timeout)]) {
+    this.clear({
+      topic: timeout.topic,
+      action: timeout.action,
+      data: [timeout.name]
+    });
+  }
+};
+
+/**
+ * Processes an incoming ACK-message and removes the corresponding subscription
+ *
+ * @param   {Object} message A parsed deepstream ACK message
+ *
+ * @public
+ * @returns {void}
+ */
+AckTimeoutRegistry.prototype.clear = function (message) {
+  var uniqueName = void 0;
+  if (message.action === C.ACTIONS.ACK && message.data.length > 1) {
+    uniqueName = message.topic + message.data[0] + (message.data[1] ? message.data[1] : '');
+  } else {
+    uniqueName = message.topic + message.action + message.data[0];
+  }
+
+  if (this._register[uniqueName]) {
+    clearTimeout(this._register[uniqueName].__timeout);
+  }
+
+  delete this._register[uniqueName];
+};
+
+/**
+ * Will be invoked if the timeout has occured before the ack message was received
+ *
+ * @param {Object} name The timeout object registered
+ *
+ * @private
+ * @returns {void}
+ */
+AckTimeoutRegistry.prototype._onTimeout = function (timeout) {
+  delete this._register[this._getUniqueName(timeout)];
+
+  if (timeout.callback) {
+    delete timeout.__timeout;
+    delete timeout.timeout;
+    timeout.callback(timeout);
+  } else {
+    var msg = 'No ACK message received in time' + (timeout.name ? ' for ' + timeout.name : '');
+    this._client._$onError(timeout.topic, timeout.event, msg);
+  }
+};
+
+/**
+ * Returns a unique name from the timeout
+ *
+ * @private
+ * @returns {void}
+ */
+AckTimeoutRegistry.prototype._getUniqueName = function (timeout) {
+  return timeout.topic + timeout.action + (timeout.name ? timeout.name : '');
+};
+
+/**
+ * Remote all timeouts when connection disconnects
+ *
+ * @private
+ * @returns {void}
+ */
+AckTimeoutRegistry.prototype._onConnectionStateChanged = function (connectionState) {
+  if (connectionState !== C.CONNECTION_STATE.OPEN) {
+    for (var uniqueName in this._register) {
+      clearTimeout(this._register[uniqueName].__timeout);
+    }
+  }
+};
+
+module.exports = AckTimeoutRegistry;
+},{"../constants/constants":15,"component-emitter2":11}],32:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+var ResubscribeNotifier = require('./resubscribe-notifier');
+
+/*
+ * Creates a listener instance which is usedby deepstream Records and Events.
+ *
+ * @param {String} topic                 One of CONSTANTS.TOPIC
+ * @param {String} pattern              A pattern that can be compiled via new RegExp(pattern)
+ * @param {Function} callback           The function which is called when pattern was found and
+ *                                      removed
+ * @param {Connection} Connection       The instance of the server connection
+ * @param {Object} options              Deepstream options
+ * @param {Client} client               deepstream.io client
+ *
+ * @constructor
+ */
+var Listener = function Listener(topic, pattern, callback, options, client, connection) {
+  this._topic = topic;
+  this._callback = callback;
+  this._pattern = pattern;
+  this._options = options;
+  this._client = client;
+  this._connection = connection;
+  this._ackTimeoutRegistry = client._$getAckTimeoutRegistry();
+  this._ackTimeoutRegistry.add({
+    topic: this._topic,
+    name: pattern,
+    action: C.ACTIONS.LISTEN
+  });
+
+  this._resubscribeNotifier = new ResubscribeNotifier(client, this._sendListen.bind(this));
+  this._sendListen();
+  this.destroyPending = false;
+};
+
+Listener.prototype.sendDestroy = function () {
+  this.destroyPending = true;
+  this._connection.sendMsg(this._topic, C.ACTIONS.UNLISTEN, [this._pattern]);
+  this._resubscribeNotifier.destroy();
+};
+
+/*
+ * Resets internal properties. Is called when provider cals unlisten.
+ *
+ * @returns {void}
+ */
+Listener.prototype.destroy = function () {
+  this._callback = null;
+  this._pattern = null;
+  this._client = null;
+  this._connection = null;
+};
+
+/*
+ * Accepting a listener request informs deepstream that the current provider is willing to
+ * provide the record or event matching the subscriptionName . This will establish the current
+ * provider as the only publisher for the actual subscription with the deepstream cluster.
+ * Either accept or reject needs to be called by the listener, otherwise it prints out a
+ * deprecated warning.
+ *
+ * @returns {void}
+ */
+Listener.prototype.accept = function (name) {
+  this._connection.sendMsg(this._topic, C.ACTIONS.LISTEN_ACCEPT, [this._pattern, name]);
+};
+
+/*
+ * Rejecting a listener request informs deepstream that the current provider is not willing
+ * to provide the record or event matching the subscriptionName . This will result in deepstream
+ * requesting another provider to do so instead. If no other provider accepts or exists, the
+ * record will remain unprovided.
+ * Either accept or reject needs to be called by the listener, otherwise it prints out a
+ * deprecated warning.
+ *
+ * @returns {void}
+ */
+Listener.prototype.reject = function (name) {
+  this._connection.sendMsg(this._topic, C.ACTIONS.LISTEN_REJECT, [this._pattern, name]);
+};
+
+/*
+ * Wraps accept and reject as an argument for the callback function.
+ *
+ * @private
+ * @returns {Object}
+ */
+Listener.prototype._createCallbackResponse = function (message) {
+  return {
+    accept: this.accept.bind(this, message.data[1]),
+    reject: this.reject.bind(this, message.data[1])
+  };
+};
+
+/*
+ * Handles the incomming message.
+ *
+ * @private
+ * @returns {void}
+ */
+Listener.prototype._$onMessage = function (message) {
+  if (message.action === C.ACTIONS.ACK) {
+    this._ackTimeoutRegistry.clear(message);
+  } else if (message.action === C.ACTIONS.SUBSCRIPTION_FOR_PATTERN_FOUND) {
+    this._callback(message.data[1], true, this._createCallbackResponse(message));
+  } else if (message.action === C.ACTIONS.SUBSCRIPTION_FOR_PATTERN_REMOVED) {
+    this._callback(message.data[1], false);
+  } else {
+    this._client._$onError(this._topic, C.EVENT.UNSOLICITED_MESSAGE, message.data[0] + '|' + message.data[1]);
+  }
+};
+
+/*
+ * Sends a C.ACTIONS.LISTEN to deepstream.
+ *
+ * @private
+ * @returns {void}
+ */
+Listener.prototype._sendListen = function () {
+  this._connection.sendMsg(this._topic, C.ACTIONS.LISTEN, [this._pattern]);
+};
+
+module.exports = Listener;
+},{"../constants/constants":15,"./resubscribe-notifier":33}],33:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+
+/**
+ * Makes sure that all functionality is resubscribed on reconnect. Subscription is called
+ * when the connection drops - which seems counterintuitive, but in fact just means
+ * that the re-subscription message will be added to the queue of messages that
+ * need re-sending as soon as the connection is re-established.
+ *
+ * Resubscribe logic should only occur once per connection loss
+ *
+ * @param {Client} client          The deepstream client
+ * @param {Function} reconnect     Function to call to allow resubscribing
+ *
+ * @constructor
+ */
+var ResubscribeNotifier = function ResubscribeNotifier(client, resubscribe) {
+  this._client = client;
+  this._resubscribe = resubscribe;
+
+  this._isReconnecting = false;
+  this._connectionStateChangeHandler = this._handleConnectionStateChanges.bind(this);
+  this._client.on('connectionStateChanged', this._connectionStateChangeHandler);
+};
+
+/**
+ * Call this whenever this functionality is no longer needed to remove links
+ *
+ * @returns {void}
+ */
+ResubscribeNotifier.prototype.destroy = function () {
+  this._client.removeListener('connectionStateChanged', this._connectionStateChangeHandler);
+  this._connectionStateChangeHandler = null;
+  this._client = null;
+};
+
+/**
+* Check whenever the connection state changes if it is in reconnecting to resubscribe
+* @private
+* @returns {void}
+*/
+ResubscribeNotifier.prototype._handleConnectionStateChanges = function () {
+  var state = this._client.getConnectionState();
+
+  if (state === C.CONNECTION_STATE.RECONNECTING && this._isReconnecting === false) {
+    this._isReconnecting = true;
+  }
+  if (state === C.CONNECTION_STATE.OPEN && this._isReconnecting === true) {
+    this._isReconnecting = false;
+    this._resubscribe();
+  }
+};
+
+module.exports = ResubscribeNotifier;
+},{"../constants/constants":15}],34:[function(require,module,exports){
+'use strict';
+
+var C = require('../constants/constants');
+var ResubscribeNotifier = require('./resubscribe-notifier');
+
+/**
+ * Provides a scaffold for subscriptionless requests to deepstream, such as the SNAPSHOT
+ * and HAS functionality. The SingleNotifier multiplexes all the client requests so
+ * that they can can be notified at once, and also includes reconnection funcionality
+ * incase the connection drops.
+ *
+ * @param {Client} client          The deepstream client
+ * @param {Connection} connection  The deepstream connection
+ * @param {String} topic           Constant. One of C.TOPIC
+ * @param {String} action          Constant. One of C.ACTIONS
+ * @param {Number} timeoutDuration The duration of the timeout in milliseconds
+ *
+ * @constructor
+ */
+var SingleNotifier = function SingleNotifier(client, connection, topic, action, timeoutDuration) {
+  this._client = client;
+  this._connection = connection;
+  this._topic = topic;
+  this._action = action;
+  this._timeoutDuration = timeoutDuration;
+  this._requests = {};
+  this._ackTimeoutRegistry = client._$getAckTimeoutRegistry();
+  this._resubscribeNotifier = new ResubscribeNotifier(this._client, this._resendRequests.bind(this));
+  this._onResponseTimeout = this._onResponseTimeout.bind(this);
+};
+
+/**
+ * Check if there is a request pending with a specified name
+ *
+ * @param {String} name An identifier for the request, e.g. a record name
+ *
+ * @public
+ * @returns {void}
+ */
+SingleNotifier.prototype.hasRequest = function (name) {
+  return !!this._requests[name];
+};
+
+/**
+ * Add a request. If one has already been made it will skip the server request
+ * and multiplex the response
+ *
+ * @param {String} name An identifier for the request, e.g. a record name
+
+ *
+ * @public
+ * @returns {void}
+ */
+SingleNotifier.prototype.request = function (name, callback) {
+  if (!this._requests[name]) {
+    this._requests[name] = [];
+    this._connection.sendMsg(this._topic, this._action, [name]);
+  }
+
+  var ackId = this._ackTimeoutRegistry.add({
+    topic: this._topic,
+    event: C.EVENT.RESPONSE_TIMEOUT,
+    name: name,
+    action: this._action,
+    timeout: this._timeoutDuration,
+    callback: this._onResponseTimeout
+  });
+  this._requests[name].push({ callback: callback, ackId: ackId });
+};
+
+/**
+ * Process a response for a request. This has quite a flexible API since callback functions
+ * differ greatly and helps maximise reuse.
+ *
+ * @param {String} name An identifier for the request, e.g. a record name
+ * @param {String} error Error message
+ * @param {Object} data If successful, the response data
+ *
+ * @public
+ * @returns {void}
+ */
+SingleNotifier.prototype.recieve = function (name, error, data) {
+  var entries = this._requests[name];
+
+  if (!entries) {
+    this._client._$onError(this._topic, C.EVENT.UNSOLICITED_MESSAGE, 'no entry for ' + name);
+    return;
+  }
+
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    this._ackTimeoutRegistry.remove({
+      ackId: entry.ackId
+    });
+    entry.callback(error, data);
+  }
+  delete this._requests[name];
+};
+
+/**
+ * Will be invoked if a timeout occurs before a response arrives from the server
+ *
+ * @param {String} name An identifier for the request, e.g. a record name
+ *
+ * @private
+ * @returns {void}
+ */
+SingleNotifier.prototype._onResponseTimeout = function (timeout) {
+  var msg = 'No response received in time for ' + this._topic + '|' + this._action + '|' + timeout.name;
+  this._client._$onError(this._topic, C.EVENT.RESPONSE_TIMEOUT, msg);
+};
+
+/**
+ * Resends all the requests once the connection is back up
+ *
+ * @private
+ * @returns {void}
+ */
+SingleNotifier.prototype._resendRequests = function () {
+  for (var request in this._requests) {
+    this._connection.sendMsg(this._topic, this._action, [request]);
+  }
+};
+
+module.exports = SingleNotifier;
+},{"../constants/constants":15,"./resubscribe-notifier":33}],35:[function(require,module,exports){
+(function (process){
+'use strict';
+/* eslint-disable valid-typeof */
+
+var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
+
+var C = require('../constants/constants');
+
+/**
+ * A regular expression that matches whitespace on either side, but
+ * not in the center of a string
+ *
+ * @type {RegExp}
+ */
+var TRIM_REGULAR_EXPRESSION = /^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g;
+
+/**
+ * Used in typeof comparisons
+ *
+ * @type {String}
+ */
+var OBJECT = 'object';
+
+/**
+ * True if environment is node, false if it's a browser
+ * This seems somewhat inelegant, if anyone knows a better solution,
+ * let's change this (must identify browserify's pseudo node implementation though)
+ *
+ * @public
+ * @type {Boolean}
+ */
+exports.isNode = typeof process !== 'undefined' && process.toString() === '[object process]';
+
+/**
+ * Provides as soon as possible async execution in a cross
+ * platform way
+ *
+ * @param   {Function} fn the function to be executed in an asynchronous fashion
+ *
+ * @public
+ * @returns {void}
+ */
+exports.nextTick = function (fn) {
+  if (exports.isNode) {
+    process.nextTick(fn);
+  } else {
+    setTimeout(fn, 0);
+  }
+};
+
+/**
+ * Removes whitespace from the beginning and end of a string
+ *
+ * @param   {String} inputString
+ *
+ * @public
+ * @returns {String} trimmedString
+ */
+exports.trim = function (inputString) {
+  if (inputString.trim) {
+    return inputString.trim();
+  }
+  return inputString.replace(TRIM_REGULAR_EXPRESSION, '');
+};
+
+/**
+ * Compares two objects for deep (recoursive) equality
+ *
+ * This used to be a significantly more complex custom implementation,
+ * but JSON.stringify has gotten so fast that it now outperforms the custom
+ * way by a factor of 1.5 to 3.
+ *
+ * In IE11 / Edge the custom implementation is still slightly faster, but for
+ * consistencies sake and the upsides of leaving edge-case handling to the native
+ * browser / node implementation we'll go for JSON.stringify from here on.
+ *
+ * Please find performance test results here
+ *
+ * http://jsperf.com/deep-equals-code-vs-json
+ *
+ * @param   {Mixed} objA
+ * @param   {Mixed} objB
+ *
+ * @public
+ * @returns {Boolean} isEqual
+ */
+exports.deepEquals = function (objA, objB) {
+  if (objA === objB) {
+    return true;
+  } else if ((typeof objA === 'undefined' ? 'undefined' : _typeof(objA)) !== OBJECT || (typeof objB === 'undefined' ? 'undefined' : _typeof(objB)) !== OBJECT) {
+    return false;
+  }
+
+  return JSON.stringify(objA) === JSON.stringify(objB);
+};
+
+/**
+ * Similar to deepEquals above, tests have shown that JSON stringify outperforms any attempt of
+ * a code based implementation by 50% - 100% whilst also handling edge-cases and keeping
+ * implementation complexity low.
+ *
+ * If ES6/7 ever decides to implement deep copying natively (what happened to Object.clone?
+ * that was briefly a thing...), let's switch it for the native implementation. For now though,
+ * even Object.assign({}, obj) only provides a shallow copy.
+ *
+ * Please find performance test results backing these statements here:
+ *
+ * http://jsperf.com/object-deep-copy-assign
+ *
+ * @param   {Mixed} obj the object that should be cloned
+ *
+ * @public
+ * @returns {Mixed} clone
+ */
+exports.deepCopy = function (obj) {
+  if ((typeof obj === 'undefined' ? 'undefined' : _typeof(obj)) === OBJECT) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+  return obj;
+};
+
+/**
+ * Copy the top level of items, but do not copy its items recourisvely. This
+ * is much quicker than deepCopy does not guarantee the object items are new/unique.
+ * Mainly used to change the reference to the actual object itself, but not its children.
+ *
+ * @param   {Mixed} obj the object that should cloned
+ *
+ * @public
+ * @returns {Mixed} clone
+ */
+exports.shallowCopy = function (obj) {
+  if (Array.isArray(obj)) {
+    return obj.slice(0);
+  } else if ((typeof obj === 'undefined' ? 'undefined' : _typeof(obj)) === OBJECT) {
+    var copy = Object.create(null);
+    var props = Object.keys(obj);
+    for (var i = 0; i < props.length; i++) {
+      copy[props[i]] = obj[props[i]];
+    }
+    return copy;
+  }
+  return obj;
+};
+
+/**
+ * Set timeout utility that adds support for disabling a timeout
+ * by passing null
+ *
+ * @param {Function} callback        the function that will be called after the given time
+ * @param {Number}   timeoutDuration the duration of the timeout in milliseconds
+ *
+ * @public
+ * @returns {Number} timeoutId
+ */
+exports.setTimeout = function (callback, timeoutDuration) {
+  if (timeoutDuration !== null) {
+    return setTimeout(callback, timeoutDuration);
+  }
+  return -1;
+};
+
+/**
+ * Set Interval utility that adds support for disabling an interval
+ * by passing null
+ *
+ * @param {Function} callback        the function that will be called after the given time
+ * @param {Number}   intervalDuration the duration of the interval in milliseconds
+ *
+ * @public
+ * @returns {Number} intervalId
+ */
+exports.setInterval = function (callback, intervalDuration) {
+  if (intervalDuration !== null) {
+    return setInterval(callback, intervalDuration);
+  }
+  return -1;
+};
+
+/**
+ * This method is used to break up long running operations and run a callback function immediately
+ * after the browser has completed other operations such as events and display updates.
+ *
+ * @param {Function} callback        the function that will be called after the given time
+ * @param {...*}     param1, ..., paramN additional parameters which are passed through to the
+ *                                     callback
+ *
+ * @public
+ */
+exports.requestIdleCallback = !exports.isNode && window.requestIdleCallback && window.requestIdleCallback.bind(window) || function (cb) {
+  var start = Date.now();
+  return setTimeout(function () {
+    cb({
+      didTimeout: false,
+      timeRemaining: function timeRemaining() {
+        return Math.max(0, 50 - (Date.now() - start));
+      }
+    });
+  }, 1);
+};
+
+exports.cancelIdleCallback = !exports.isNode && window.cancelIdleCallback && window.cancelIdleCallback.bind(window) || function (id) {
+  clearTimeout(id);
+};
+
+/**
+ * Used to see if a protocol is specified within the url
+ * @type {RegExp}
+ */
+var hasUrlProtocol = /^wss:|^ws:|^\/\//;
+
+/**
+ * Used to see if the protocol contains any unsupported protocols
+ * @type {RegExp}
+ */
+var unsupportedProtocol = /^http:|^https:/;
+
+var URL = require('url');
+
+/**
+ * Take the url passed when creating the client and ensure the correct
+ * protocol is provided
+ * @param  {String} url Url passed in by client
+ * @return {String} Url with supported protocol
+ */
+exports.parseUrl = function (initialURl, defaultPath) {
+  var url = initialURl;
+  if (unsupportedProtocol.test(url)) {
+    throw new Error('Only ws and wss are supported');
+  }
+  if (!hasUrlProtocol.test(url)) {
+    url = 'ws://' + url;
+  } else if (url.indexOf('//') === 0) {
+    url = 'ws:' + url;
+  }
+  var serverUrl = URL.parse(url);
+  if (!serverUrl.host) {
+    throw new Error('invalid url, missing host');
+  }
+  serverUrl.protocol = serverUrl.protocol ? serverUrl.protocol : 'ws:';
+  serverUrl.pathname = serverUrl.pathname ? serverUrl.pathname : defaultPath;
+  return URL.format(serverUrl);
+};
+
+/**
+ * Returns true is the connection state is OPEN
+ * @return {Boolean}
+ */
+exports.isConnected = function (client) {
+  var connectionState = client.getConnectionState();
+  return connectionState === C.CONNECTION_STATE.OPEN;
+};
+}).call(this,require('_process'))
+},{"../constants/constants":15,"_process":2,"url":7}],36:[function(require,module,exports){
+'use strict';
+
+/**
+ * Custom implementation of a double ended queue.
+ */
+function Denque(array) {
+  // circular buffer
+  this._list = new Array(4);
+  // bit mask
+  this._capacityMask = 0x3;
+  // next unread item
+  this._head = 0;
+  // next empty slot
+  this._tail = 0;
+
+  if (Array.isArray(array)) {
+    this._fromArray(array);
+  }
+}
+
+/**
+ * -------------
+ *  PUBLIC API
+ * -------------
+ */
+
+/**
+ * Returns the item at the specified index from the list.
+ * 0 is the first element, 1 is the second, and so on...
+ * Elements at negative values are that many from the end: -1 is one before the end
+ * (the last element), -2 is two before the end (one before last), etc.
+ * @param index
+ * @returns {*}
+ */
+Denque.prototype.peekAt = function peekAt(index) {
+  var i = index;
+  // expect a number or return undefined
+  if ((i !== (i | 0))) {
+    return void 0;
+  }
+  var len = this.size();
+  if (i >= len || i < -len) return undefined;
+  if (i < 0) i += len;
+  i = (this._head + i) & this._capacityMask;
+  return this._list[i];
+};
+
+/**
+ * Alias for peakAt()
+ * @param i
+ * @returns {*}
+ */
+Denque.prototype.get = function get(i) {
+  return this.peekAt(i);
+};
+
+/**
+ * Returns the first item in the list without removing it.
+ * @returns {*}
+ */
+Denque.prototype.peek = function peek() {
+  if (this._head === this._tail) return undefined;
+  return this._list[this._head];
+};
+
+/**
+ * Alias for peek()
+ * @returns {*}
+ */
+Denque.prototype.peekFront = function peekFront() {
+  return this.peek();
+};
+
+/**
+ * Returns the item that is at the back of the queue without removing it.
+ * Uses peekAt(-1)
+ */
+Denque.prototype.peekBack = function peekBack() {
+  return this.peekAt(-1);
+};
+
+/**
+ * Returns the current length of the queue
+ * @return {Number}
+ */
+Object.defineProperty(Denque.prototype, 'length', {
+  get: function length() {
+    return this.size();
+  }
+});
+
+/**
+ * Return the number of items on the list, or 0 if empty.
+ * @returns {number}
+ */
+Denque.prototype.size = function size() {
+  if (this._head === this._tail) return 0;
+  if (this._head < this._tail) return this._tail - this._head;
+  else return this._capacityMask + 1 - (this._head - this._tail);
+};
+
+/**
+ * Add an item at the beginning of the list.
+ * @param item
+ */
+Denque.prototype.unshift = function unshift(item) {
+  if (item === undefined) return this.length;
+  var len = this._list.length;
+  this._head = (this._head - 1 + len) & this._capacityMask;
+  this._list[this._head] = item;
+  if (this._tail === this._head) this._growArray();
+  if (this._head < this._tail) return this._tail - this._head;
+  else return this._capacityMask + 1 - (this._head - this._tail);
+};
+
+/**
+ * Remove and return the first item on the list,
+ * Returns undefined if the list is empty.
+ * @returns {*}
+ */
+Denque.prototype.shift = function shift() {
+  var head = this._head;
+  if (head === this._tail) return undefined;
+  var item = this._list[head];
+  this._list[head] = undefined;
+  this._head = (head + 1) & this._capacityMask;
+  if (head < 2 && this._tail > 10000 && this._tail <= this._list.length >>> 2) this._shrinkArray();
+  return item;
+};
+
+/**
+ * Add an item to the bottom of the list.
+ * @param item
+ */
+Denque.prototype.push = function push(item) {
+  if (item === undefined) return this.length;
+  var tail = this._tail;
+  this._list[tail] = item;
+  this._tail = (tail + 1) & this._capacityMask;
+  if (this._tail === this._head) {
+    this._growArray();
+  }
+
+  if (this._head < this._tail) return this._tail - this._head;
+  else return this._capacityMask + 1 - (this._head - this._tail);
+};
+
+/**
+ * Remove and return the last item on the list.
+ * Returns undefined if the list is empty.
+ * @returns {*}
+ */
+Denque.prototype.pop = function pop() {
+  var tail = this._tail;
+  if (tail === this._head) return undefined;
+  var len = this._list.length;
+  this._tail = (tail - 1 + len) & this._capacityMask;
+  var item = this._list[this._tail];
+  this._list[this._tail] = undefined;
+  if (this._head < 2 && tail > 10000 && tail <= len >>> 2) this._shrinkArray();
+  return item;
+};
+
+/**
+ * Soft clear - does not reset capacity.
+ */
+Denque.prototype.clear = function clear() {
+  this._head = 0;
+  this._tail = 0;
+};
+
+/**
+ * Returns true or false whether the list is empty.
+ * @returns {boolean}
+ */
+Denque.prototype.isEmpty = function isEmpty() {
+  return this._head === this._tail;
+};
+
+/**
+ * Returns an array of all queue items.
+ * @returns {Array}
+ */
+Denque.prototype.toArray = function toArray() {
+  return this._copyArray(false);
+};
+
+/**
+ * -------------
+ *   INTERNALS
+ * -------------
+ */
+
+/**
+ * Fills the queue with items from an array
+ * For use in the constructor
+ * @param array
+ * @private
+ */
+Denque.prototype._fromArray = function _fromArray(array) {
+  for (var i = 0; i < array.length; i++) this.push(array[i]);
+};
+
+/**
+ *
+ * @param fullCopy
+ * @returns {Array}
+ * @private
+ */
+Denque.prototype._copyArray = function _copyArray(fullCopy) {
+  var newArray = [];
+  var list = this._list;
+  var len = list.length;
+  var i;
+  if (fullCopy || this._head > this._tail) {
+    for (i = this._head; i < len; i++) newArray.push(list[i]);
+    for (i = 0; i < this._tail; i++) newArray.push(list[i]);
+  } else {
+    for (i = this._head; i < this._tail; i++) newArray.push(list[i]);
+  }
+  return newArray;
+};
+
+/**
+ * Grows the internal list array.
+ * @private
+ */
+Denque.prototype._growArray = function _growArray() {
+  if (this._head) {
+    // copy existing data, head to end, then beginning to tail.
+    this._list = this._copyArray(true);
+    this._head = 0;
+  }
+
+  // head is at 0 and array is now full, safe to extend
+  this._tail = this._list.length;
+
+  this._list.length *= 2;
+  this._capacityMask = (this._capacityMask << 1) | 1;
+};
+
+/**
+ * Shrinks the internal list array.
+ * @private
+ */
+Denque.prototype._shrinkArray = function _shrinkArray() {
+  this._list.length >>>= 1;
+  this._capacityMask >>>= 1;
+};
+
+
+module.exports = Denque;
+
+},{}],37:[function(require,module,exports){
 (function (global){
 ////      ____ _         _
 ////     / ___| |       | |_
@@ -9884,7 +16062,67 @@ module.exports = ret;
 }));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"concurrify":6,"inspect-f":9,"sanctuary-type-classes":321,"sanctuary-type-identifiers":322}],9:[function(require,module,exports){
+},{"concurrify":12,"inspect-f":39,"sanctuary-type-classes":358,"sanctuary-type-identifiers":359}],38:[function(require,module,exports){
+/*istanbul ignore next*/"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+
+
+// futurize :: Constructor -> CPS -> ( ...args -> Future )
+var futurize = /*istanbul ignore next*/exports.futurize = function futurize(Future) /*istanbul ignore next*/{
+  return function (fn) /*istanbul ignore next*/{
+    return function () {
+      /*istanbul ignore next*/for (var _len = arguments.length, args = Array(_len), _key = 0; _key < _len; _key++) {
+        args[_key] = arguments[_key];
+      }
+
+      return new Future(function (rej, res) /*istanbul ignore next*/{
+        return void /*istanbul ignore next*/fn.apply( /*istanbul ignore next*/undefined, /*istanbul ignore next*/args.concat([function (err, result) /*istanbul ignore next*/{
+          return err ? rej(err) : res(result);
+        }]));
+      });
+    };
+  };
+};
+
+// futurizeV :: Constructor -> VariadicCPS -> ( ...args -> Future Array )
+var futurizeV = /*istanbul ignore next*/exports.futurizeV = function futurizeV(Future) /*istanbul ignore next*/{
+  return function (fn) /*istanbul ignore next*/{
+    return function () {
+      /*istanbul ignore next*/for (var _len2 = arguments.length, args = Array(_len2), _key2 = 0; _key2 < _len2; _key2++) {
+        args[_key2] = arguments[_key2];
+      }
+
+      return new Future(function (rej, res) /*istanbul ignore next*/{
+        return void /*istanbul ignore next*/fn.apply( /*istanbul ignore next*/undefined, /*istanbul ignore next*/args.concat([function (err) /*istanbul ignore next*/{
+          for (var _len3 = arguments.length, results = Array(_len3 > 1 ? _len3 - 1 : 0), _key3 = 1; _key3 < _len3; _key3++) {
+            results[_key3 - 1] = arguments[_key3];
+          }
+
+          return err ? rej(err) : res(results);
+        }]));
+      });
+    };
+  };
+};
+
+// futurizeP :: Constructor -> Promise -> ( ...args -> Future )
+var futurizeP = /*istanbul ignore next*/exports.futurizeP = function futurizeP(Future) /*istanbul ignore next*/{
+  return function (fn) /*istanbul ignore next*/{
+    return function () {
+      /*istanbul ignore next*/for (var _len4 = arguments.length, args = Array(_len4), _key4 = 0; _key4 < _len4; _key4++) {
+        args[_key4] = arguments[_key4];
+      }
+
+      return new Future(function (rej, res) /*istanbul ignore next*/{
+        return void /*istanbul ignore next*/fn.apply( /*istanbul ignore next*/undefined, args).then(res, rej);
+      });
+    };
+  };
+};
+},{}],39:[function(require,module,exports){
 (function (global){
 (function(global, f) {
 
@@ -9978,7 +16216,7 @@ module.exports = ret;
 }));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],10:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 (function (global){
 /**
  * @license
@@ -27066,7 +33304,7 @@ module.exports = ret;
 }.call(this));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],11:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 //! moment.js
 //! version : 2.18.1
 //! authors : Tim Wood, Iskren Chernev, Moment.js contributors
@@ -31531,7 +37769,7 @@ return hooks;
 
 })));
 
-},{}],12:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 module.exports = {
   F: require('./src/F'),
   T: require('./src/T'),
@@ -31773,7 +38011,7 @@ module.exports = {
   zipWith: require('./src/zipWith')
 };
 
-},{"./src/F":13,"./src/T":14,"./src/__":15,"./src/add":16,"./src/addIndex":17,"./src/adjust":18,"./src/all":19,"./src/allPass":20,"./src/always":21,"./src/and":22,"./src/any":23,"./src/anyPass":24,"./src/ap":25,"./src/aperture":26,"./src/append":27,"./src/apply":28,"./src/applySpec":29,"./src/ascend":30,"./src/assoc":31,"./src/assocPath":32,"./src/binary":33,"./src/bind":34,"./src/both":35,"./src/call":36,"./src/chain":37,"./src/clamp":38,"./src/clone":39,"./src/comparator":40,"./src/complement":41,"./src/compose":42,"./src/composeK":43,"./src/composeP":44,"./src/concat":45,"./src/cond":46,"./src/construct":47,"./src/constructN":48,"./src/contains":49,"./src/converge":50,"./src/countBy":51,"./src/curry":52,"./src/curryN":53,"./src/dec":54,"./src/defaultTo":55,"./src/descend":56,"./src/difference":57,"./src/differenceWith":58,"./src/dissoc":59,"./src/dissocPath":60,"./src/divide":61,"./src/drop":62,"./src/dropLast":63,"./src/dropLastWhile":64,"./src/dropRepeats":65,"./src/dropRepeatsWith":66,"./src/dropWhile":67,"./src/either":68,"./src/empty":69,"./src/eqBy":70,"./src/eqProps":71,"./src/equals":72,"./src/evolve":73,"./src/filter":74,"./src/find":75,"./src/findIndex":76,"./src/findLast":77,"./src/findLastIndex":78,"./src/flatten":79,"./src/flip":80,"./src/forEach":81,"./src/forEachObjIndexed":82,"./src/fromPairs":83,"./src/groupBy":84,"./src/groupWith":85,"./src/gt":86,"./src/gte":87,"./src/has":88,"./src/hasIn":89,"./src/head":90,"./src/identical":91,"./src/identity":92,"./src/ifElse":93,"./src/inc":94,"./src/indexBy":95,"./src/indexOf":96,"./src/init":97,"./src/insert":98,"./src/insertAll":99,"./src/intersection":170,"./src/intersectionWith":171,"./src/intersperse":172,"./src/into":173,"./src/invert":174,"./src/invertObj":175,"./src/invoker":176,"./src/is":177,"./src/isArrayLike":178,"./src/isEmpty":179,"./src/isNil":180,"./src/join":181,"./src/juxt":182,"./src/keys":183,"./src/keysIn":184,"./src/last":185,"./src/lastIndexOf":186,"./src/length":187,"./src/lens":188,"./src/lensIndex":189,"./src/lensPath":190,"./src/lensProp":191,"./src/lift":192,"./src/liftN":193,"./src/lt":194,"./src/lte":195,"./src/map":196,"./src/mapAccum":197,"./src/mapAccumRight":198,"./src/mapObjIndexed":199,"./src/match":200,"./src/mathMod":201,"./src/max":202,"./src/maxBy":203,"./src/mean":204,"./src/median":205,"./src/memoize":206,"./src/merge":207,"./src/mergeAll":208,"./src/mergeWith":209,"./src/mergeWithKey":210,"./src/min":211,"./src/minBy":212,"./src/modulo":213,"./src/multiply":214,"./src/nAry":215,"./src/negate":216,"./src/none":217,"./src/not":218,"./src/nth":219,"./src/nthArg":220,"./src/objOf":221,"./src/of":222,"./src/omit":223,"./src/once":224,"./src/or":225,"./src/over":226,"./src/pair":227,"./src/partial":228,"./src/partialRight":229,"./src/partition":230,"./src/path":231,"./src/pathEq":232,"./src/pathOr":233,"./src/pathSatisfies":234,"./src/pick":235,"./src/pickAll":236,"./src/pickBy":237,"./src/pipe":238,"./src/pipeK":239,"./src/pipeP":240,"./src/pluck":241,"./src/prepend":242,"./src/product":243,"./src/project":244,"./src/prop":245,"./src/propEq":246,"./src/propIs":247,"./src/propOr":248,"./src/propSatisfies":249,"./src/props":250,"./src/range":251,"./src/reduce":252,"./src/reduceBy":253,"./src/reduceRight":254,"./src/reduceWhile":255,"./src/reduced":256,"./src/reject":257,"./src/remove":258,"./src/repeat":259,"./src/replace":260,"./src/reverse":261,"./src/scan":262,"./src/sequence":263,"./src/set":264,"./src/slice":265,"./src/sort":266,"./src/sortBy":267,"./src/sortWith":268,"./src/split":269,"./src/splitAt":270,"./src/splitEvery":271,"./src/splitWhen":272,"./src/subtract":273,"./src/sum":274,"./src/symmetricDifference":275,"./src/symmetricDifferenceWith":276,"./src/tail":277,"./src/take":278,"./src/takeLast":279,"./src/takeLastWhile":280,"./src/takeWhile":281,"./src/tap":282,"./src/test":283,"./src/times":284,"./src/toLower":285,"./src/toPairs":286,"./src/toPairsIn":287,"./src/toString":288,"./src/toUpper":289,"./src/transduce":290,"./src/transpose":291,"./src/traverse":292,"./src/trim":293,"./src/tryCatch":294,"./src/type":295,"./src/unapply":296,"./src/unary":297,"./src/uncurryN":298,"./src/unfold":299,"./src/union":300,"./src/unionWith":301,"./src/uniq":302,"./src/uniqBy":303,"./src/uniqWith":304,"./src/unless":305,"./src/unnest":306,"./src/until":307,"./src/update":308,"./src/useWith":309,"./src/values":310,"./src/valuesIn":311,"./src/view":312,"./src/when":313,"./src/where":314,"./src/whereEq":315,"./src/without":316,"./src/xprod":317,"./src/zip":318,"./src/zipObj":319,"./src/zipWith":320}],13:[function(require,module,exports){
+},{"./src/F":43,"./src/T":44,"./src/__":45,"./src/add":46,"./src/addIndex":47,"./src/adjust":48,"./src/all":49,"./src/allPass":50,"./src/always":51,"./src/and":52,"./src/any":53,"./src/anyPass":54,"./src/ap":55,"./src/aperture":56,"./src/append":57,"./src/apply":58,"./src/applySpec":59,"./src/ascend":60,"./src/assoc":61,"./src/assocPath":62,"./src/binary":63,"./src/bind":64,"./src/both":65,"./src/call":66,"./src/chain":67,"./src/clamp":68,"./src/clone":69,"./src/comparator":70,"./src/complement":71,"./src/compose":72,"./src/composeK":73,"./src/composeP":74,"./src/concat":75,"./src/cond":76,"./src/construct":77,"./src/constructN":78,"./src/contains":79,"./src/converge":80,"./src/countBy":81,"./src/curry":82,"./src/curryN":83,"./src/dec":84,"./src/defaultTo":85,"./src/descend":86,"./src/difference":87,"./src/differenceWith":88,"./src/dissoc":89,"./src/dissocPath":90,"./src/divide":91,"./src/drop":92,"./src/dropLast":93,"./src/dropLastWhile":94,"./src/dropRepeats":95,"./src/dropRepeatsWith":96,"./src/dropWhile":97,"./src/either":98,"./src/empty":99,"./src/eqBy":100,"./src/eqProps":101,"./src/equals":102,"./src/evolve":103,"./src/filter":104,"./src/find":105,"./src/findIndex":106,"./src/findLast":107,"./src/findLastIndex":108,"./src/flatten":109,"./src/flip":110,"./src/forEach":111,"./src/forEachObjIndexed":112,"./src/fromPairs":113,"./src/groupBy":114,"./src/groupWith":115,"./src/gt":116,"./src/gte":117,"./src/has":118,"./src/hasIn":119,"./src/head":120,"./src/identical":121,"./src/identity":122,"./src/ifElse":123,"./src/inc":124,"./src/indexBy":125,"./src/indexOf":126,"./src/init":127,"./src/insert":128,"./src/insertAll":129,"./src/intersection":200,"./src/intersectionWith":201,"./src/intersperse":202,"./src/into":203,"./src/invert":204,"./src/invertObj":205,"./src/invoker":206,"./src/is":207,"./src/isArrayLike":208,"./src/isEmpty":209,"./src/isNil":210,"./src/join":211,"./src/juxt":212,"./src/keys":213,"./src/keysIn":214,"./src/last":215,"./src/lastIndexOf":216,"./src/length":217,"./src/lens":218,"./src/lensIndex":219,"./src/lensPath":220,"./src/lensProp":221,"./src/lift":222,"./src/liftN":223,"./src/lt":224,"./src/lte":225,"./src/map":226,"./src/mapAccum":227,"./src/mapAccumRight":228,"./src/mapObjIndexed":229,"./src/match":230,"./src/mathMod":231,"./src/max":232,"./src/maxBy":233,"./src/mean":234,"./src/median":235,"./src/memoize":236,"./src/merge":237,"./src/mergeAll":238,"./src/mergeWith":239,"./src/mergeWithKey":240,"./src/min":241,"./src/minBy":242,"./src/modulo":243,"./src/multiply":244,"./src/nAry":245,"./src/negate":246,"./src/none":247,"./src/not":248,"./src/nth":249,"./src/nthArg":250,"./src/objOf":251,"./src/of":252,"./src/omit":253,"./src/once":254,"./src/or":255,"./src/over":256,"./src/pair":257,"./src/partial":258,"./src/partialRight":259,"./src/partition":260,"./src/path":261,"./src/pathEq":262,"./src/pathOr":263,"./src/pathSatisfies":264,"./src/pick":265,"./src/pickAll":266,"./src/pickBy":267,"./src/pipe":268,"./src/pipeK":269,"./src/pipeP":270,"./src/pluck":271,"./src/prepend":272,"./src/product":273,"./src/project":274,"./src/prop":275,"./src/propEq":276,"./src/propIs":277,"./src/propOr":278,"./src/propSatisfies":279,"./src/props":280,"./src/range":281,"./src/reduce":282,"./src/reduceBy":283,"./src/reduceRight":284,"./src/reduceWhile":285,"./src/reduced":286,"./src/reject":287,"./src/remove":288,"./src/repeat":289,"./src/replace":290,"./src/reverse":291,"./src/scan":292,"./src/sequence":293,"./src/set":294,"./src/slice":295,"./src/sort":296,"./src/sortBy":297,"./src/sortWith":298,"./src/split":299,"./src/splitAt":300,"./src/splitEvery":301,"./src/splitWhen":302,"./src/subtract":303,"./src/sum":304,"./src/symmetricDifference":305,"./src/symmetricDifferenceWith":306,"./src/tail":307,"./src/take":308,"./src/takeLast":309,"./src/takeLastWhile":310,"./src/takeWhile":311,"./src/tap":312,"./src/test":313,"./src/times":314,"./src/toLower":315,"./src/toPairs":316,"./src/toPairsIn":317,"./src/toString":318,"./src/toUpper":319,"./src/transduce":320,"./src/transpose":321,"./src/traverse":322,"./src/trim":323,"./src/tryCatch":324,"./src/type":325,"./src/unapply":326,"./src/unary":327,"./src/uncurryN":328,"./src/unfold":329,"./src/union":330,"./src/unionWith":331,"./src/uniq":332,"./src/uniqBy":333,"./src/uniqWith":334,"./src/unless":335,"./src/unnest":336,"./src/until":337,"./src/update":338,"./src/useWith":339,"./src/values":340,"./src/valuesIn":341,"./src/view":342,"./src/when":343,"./src/where":344,"./src/whereEq":345,"./src/without":346,"./src/xprod":347,"./src/zip":348,"./src/zipObj":349,"./src/zipWith":350}],43:[function(require,module,exports){
 var always = require('./always');
 
 
@@ -31794,7 +38032,7 @@ var always = require('./always');
  */
 module.exports = always(false);
 
-},{"./always":21}],14:[function(require,module,exports){
+},{"./always":51}],44:[function(require,module,exports){
 var always = require('./always');
 
 
@@ -31815,7 +38053,7 @@ var always = require('./always');
  */
 module.exports = always(true);
 
-},{"./always":21}],15:[function(require,module,exports){
+},{"./always":51}],45:[function(require,module,exports){
 /**
  * A special placeholder value used to specify "gaps" within curried functions,
  * allowing partial application of any combination of arguments, regardless of
@@ -31844,7 +38082,7 @@ module.exports = always(true);
  */
 module.exports = {'@@functional/placeholder': true};
 
-},{}],16:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -31869,7 +38107,7 @@ module.exports = _curry2(function add(a, b) {
   return Number(a) + Number(b);
 });
 
-},{"./internal/_curry2":114}],17:[function(require,module,exports){
+},{"./internal/_curry2":144}],47:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
@@ -31914,7 +38152,7 @@ module.exports = _curry1(function addIndex(fn) {
   });
 });
 
-},{"./curryN":53,"./internal/_concat":109,"./internal/_curry1":113}],18:[function(require,module,exports){
+},{"./curryN":83,"./internal/_concat":139,"./internal/_curry1":143}],48:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry3 = require('./internal/_curry3');
 
@@ -31955,7 +38193,7 @@ module.exports = _curry3(function adjust(fn, idx, list) {
   return _list;
 });
 
-},{"./internal/_concat":109,"./internal/_curry3":115}],19:[function(require,module,exports){
+},{"./internal/_concat":139,"./internal/_curry3":145}],49:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xall = require('./internal/_xall');
@@ -31996,7 +38234,7 @@ module.exports = _curry2(_dispatchable(['all'], _xall, function all(fn, list) {
   return true;
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xall":150}],20:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xall":180}],50:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 var max = require('./max');
@@ -32043,7 +38281,7 @@ module.exports = _curry1(function allPass(preds) {
   });
 });
 
-},{"./curryN":53,"./internal/_curry1":113,"./max":202,"./pluck":241,"./reduce":252}],21:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry1":143,"./max":232,"./pluck":271,"./reduce":282}],51:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -32072,7 +38310,7 @@ module.exports = _curry1(function always(val) {
   };
 });
 
-},{"./internal/_curry1":113}],22:[function(require,module,exports){
+},{"./internal/_curry1":143}],52:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -32099,7 +38337,7 @@ module.exports = _curry2(function and(a, b) {
   return a && b;
 });
 
-},{"./internal/_curry2":114}],23:[function(require,module,exports){
+},{"./internal/_curry2":144}],53:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xany = require('./internal/_xany');
@@ -32141,7 +38379,7 @@ module.exports = _curry2(_dispatchable(['any'], _xany, function any(fn, list) {
   return false;
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xany":151}],24:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xany":181}],54:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 var max = require('./max');
@@ -32189,7 +38427,7 @@ module.exports = _curry1(function anyPass(preds) {
   });
 });
 
-},{"./curryN":53,"./internal/_curry1":113,"./max":202,"./pluck":241,"./reduce":252}],25:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry1":143,"./max":232,"./pluck":271,"./reduce":282}],55:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 var _reduce = require('./internal/_reduce');
@@ -32228,7 +38466,7 @@ module.exports = _curry2(function ap(applicative, fn) {
   );
 });
 
-},{"./internal/_concat":109,"./internal/_curry2":114,"./internal/_reduce":145,"./map":196}],26:[function(require,module,exports){
+},{"./internal/_concat":139,"./internal/_curry2":144,"./internal/_reduce":175,"./map":226}],56:[function(require,module,exports){
 var _aperture = require('./internal/_aperture');
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
@@ -32258,7 +38496,7 @@ var _xaperture = require('./internal/_xaperture');
  */
 module.exports = _curry2(_dispatchable([], _xaperture, _aperture));
 
-},{"./internal/_aperture":101,"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xaperture":152}],27:[function(require,module,exports){
+},{"./internal/_aperture":131,"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xaperture":182}],57:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 
@@ -32287,7 +38525,7 @@ module.exports = _curry2(function append(el, list) {
   return _concat(list, [el]);
 });
 
-},{"./internal/_concat":109,"./internal/_curry2":114}],28:[function(require,module,exports){
+},{"./internal/_concat":139,"./internal/_curry2":144}],58:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -32315,7 +38553,7 @@ module.exports = _curry2(function apply(fn, args) {
   return fn.apply(this, args);
 });
 
-},{"./internal/_curry2":114}],29:[function(require,module,exports){
+},{"./internal/_curry2":144}],59:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var apply = require('./apply');
 var curryN = require('./curryN');
@@ -32361,7 +38599,7 @@ module.exports = _curry1(function applySpec(spec) {
                 });
 });
 
-},{"./apply":28,"./curryN":53,"./internal/_curry1":113,"./map":196,"./max":202,"./pluck":241,"./reduce":252,"./values":310}],30:[function(require,module,exports){
+},{"./apply":58,"./curryN":83,"./internal/_curry1":143,"./map":226,"./max":232,"./pluck":271,"./reduce":282,"./values":340}],60:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -32392,7 +38630,7 @@ module.exports = _curry3(function ascend(fn, a, b) {
   return aa < bb ? -1 : aa > bb ? 1 : 0;
 });
 
-},{"./internal/_curry3":115}],31:[function(require,module,exports){
+},{"./internal/_curry3":145}],61:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -32425,7 +38663,7 @@ module.exports = _curry3(function assoc(prop, val, obj) {
   return result;
 });
 
-},{"./internal/_curry3":115}],32:[function(require,module,exports){
+},{"./internal/_curry3":145}],62:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _has = require('./internal/_has');
 var _isArray = require('./internal/_isArray');
@@ -32475,7 +38713,7 @@ module.exports = _curry3(function assocPath(path, val, obj) {
   }
 });
 
-},{"./assoc":31,"./internal/_curry3":115,"./internal/_has":125,"./internal/_isArray":129,"./internal/_isInteger":131}],33:[function(require,module,exports){
+},{"./assoc":61,"./internal/_curry3":145,"./internal/_has":155,"./internal/_isArray":159,"./internal/_isInteger":161}],63:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var nAry = require('./nAry');
 
@@ -32511,7 +38749,7 @@ module.exports = _curry1(function binary(fn) {
   return nAry(2, fn);
 });
 
-},{"./internal/_curry1":113,"./nAry":215}],34:[function(require,module,exports){
+},{"./internal/_curry1":143,"./nAry":245}],64:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry2 = require('./internal/_curry2');
 
@@ -32544,7 +38782,7 @@ module.exports = _curry2(function bind(fn, thisObj) {
   });
 });
 
-},{"./internal/_arity":102,"./internal/_curry2":114}],35:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_curry2":144}],65:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isFunction = require('./internal/_isFunction');
 var and = require('./and');
@@ -32587,7 +38825,7 @@ module.exports = _curry2(function both(f, g) {
     lift(and)(f, g);
 });
 
-},{"./and":22,"./internal/_curry2":114,"./internal/_isFunction":130,"./lift":192}],36:[function(require,module,exports){
+},{"./and":52,"./internal/_curry2":144,"./internal/_isFunction":160,"./lift":222}],66:[function(require,module,exports){
 var curry = require('./curry');
 
 
@@ -32626,7 +38864,7 @@ module.exports = curry(function call(fn) {
   return fn.apply(this, Array.prototype.slice.call(arguments, 1));
 });
 
-},{"./curry":52}],37:[function(require,module,exports){
+},{"./curry":82}],67:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _makeFlat = require('./internal/_makeFlat');
@@ -32663,7 +38901,7 @@ module.exports = _curry2(_dispatchable(['chain'], _xchain, function chain(fn, mo
   return _makeFlat(false)(map(fn, monad));
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_makeFlat":138,"./internal/_xchain":153,"./map":196}],38:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_makeFlat":168,"./internal/_xchain":183,"./map":226}],68:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 /**
@@ -32695,7 +38933,7 @@ module.exports = _curry3(function clamp(min, max, value) {
          value;
 });
 
-},{"./internal/_curry3":115}],39:[function(require,module,exports){
+},{"./internal/_curry3":145}],69:[function(require,module,exports){
 var _clone = require('./internal/_clone');
 var _curry1 = require('./internal/_curry1');
 
@@ -32727,7 +38965,7 @@ module.exports = _curry1(function clone(value) {
     _clone(value, [], [], true);
 });
 
-},{"./internal/_clone":106,"./internal/_curry1":113}],40:[function(require,module,exports){
+},{"./internal/_clone":136,"./internal/_curry1":143}],70:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -32757,7 +38995,7 @@ module.exports = _curry1(function comparator(pred) {
   };
 });
 
-},{"./internal/_curry1":113}],41:[function(require,module,exports){
+},{"./internal/_curry1":143}],71:[function(require,module,exports){
 var lift = require('./lift');
 var not = require('./not');
 
@@ -32786,7 +39024,7 @@ var not = require('./not');
  */
 module.exports = lift(not);
 
-},{"./lift":192,"./not":218}],42:[function(require,module,exports){
+},{"./lift":222,"./not":248}],72:[function(require,module,exports){
 var pipe = require('./pipe');
 var reverse = require('./reverse');
 
@@ -32822,7 +39060,7 @@ module.exports = function compose() {
   return pipe.apply(this, reverse(arguments));
 };
 
-},{"./pipe":238,"./reverse":261}],43:[function(require,module,exports){
+},{"./pipe":268,"./reverse":291}],73:[function(require,module,exports){
 var chain = require('./chain');
 var compose = require('./compose');
 var map = require('./map');
@@ -32867,7 +39105,7 @@ module.exports = function composeK() {
   return compose(compose.apply(this, map(chain, init)), last);
 };
 
-},{"./chain":37,"./compose":42,"./map":196}],44:[function(require,module,exports){
+},{"./chain":67,"./compose":72,"./map":226}],74:[function(require,module,exports){
 var pipeP = require('./pipeP');
 var reverse = require('./reverse');
 
@@ -32913,7 +39151,7 @@ module.exports = function composeP() {
   return pipeP.apply(this, reverse(arguments));
 };
 
-},{"./pipeP":240,"./reverse":261}],45:[function(require,module,exports){
+},{"./pipeP":270,"./reverse":291}],75:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isArray = require('./internal/_isArray');
 var _isFunction = require('./internal/_isFunction');
@@ -32956,7 +39194,7 @@ module.exports = _curry2(function concat(a, b) {
   return a.concat(b);
 });
 
-},{"./internal/_curry2":114,"./internal/_isArray":129,"./internal/_isFunction":130,"./toString":288}],46:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_isArray":159,"./internal/_isFunction":160,"./toString":318}],76:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 var map = require('./map');
@@ -33005,7 +39243,7 @@ module.exports = _curry1(function cond(pairs) {
   });
 });
 
-},{"./internal/_arity":102,"./internal/_curry1":113,"./map":196,"./max":202,"./reduce":252}],47:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_curry1":143,"./map":226,"./max":232,"./reduce":282}],77:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var constructN = require('./constructN');
 
@@ -33045,7 +39283,7 @@ module.exports = _curry1(function construct(Fn) {
   return constructN(Fn.length, Fn);
 });
 
-},{"./constructN":48,"./internal/_curry1":113}],48:[function(require,module,exports){
+},{"./constructN":78,"./internal/_curry1":143}],78:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var curry = require('./curry');
 var nAry = require('./nAry');
@@ -33109,7 +39347,7 @@ module.exports = _curry2(function constructN(n, Fn) {
   }));
 });
 
-},{"./curry":52,"./internal/_curry2":114,"./nAry":215}],49:[function(require,module,exports){
+},{"./curry":82,"./internal/_curry2":144,"./nAry":245}],79:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 
@@ -33136,7 +39374,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(_contains);
 
-},{"./internal/_contains":110,"./internal/_curry2":114}],50:[function(require,module,exports){
+},{"./internal/_contains":140,"./internal/_curry2":144}],80:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _map = require('./internal/_map');
 var curryN = require('./curryN');
@@ -33182,7 +39420,7 @@ module.exports = _curry2(function converge(after, fns) {
   });
 });
 
-},{"./curryN":53,"./internal/_curry2":114,"./internal/_map":139,"./max":202,"./pluck":241,"./reduce":252}],51:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry2":144,"./internal/_map":169,"./max":232,"./pluck":271,"./reduce":282}],81:[function(require,module,exports){
 var reduceBy = require('./reduceBy');
 
 
@@ -33212,7 +39450,7 @@ var reduceBy = require('./reduceBy');
  */
 module.exports = reduceBy(function(acc, elem) { return acc + 1; }, 0);
 
-},{"./reduceBy":253}],52:[function(require,module,exports){
+},{"./reduceBy":283}],82:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 
@@ -33262,7 +39500,7 @@ module.exports = _curry1(function curry(fn) {
   return curryN(fn.length, fn);
 });
 
-},{"./curryN":53,"./internal/_curry1":113}],53:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry1":143}],83:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 var _curry2 = require('./internal/_curry2');
@@ -33318,7 +39556,7 @@ module.exports = _curry2(function curryN(length, fn) {
   return _arity(length, _curryN(length, [], fn));
 });
 
-},{"./internal/_arity":102,"./internal/_curry1":113,"./internal/_curry2":114,"./internal/_curryN":116}],54:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_curry1":143,"./internal/_curry2":144,"./internal/_curryN":146}],84:[function(require,module,exports){
 var add = require('./add');
 
 
@@ -33339,7 +39577,7 @@ var add = require('./add');
  */
 module.exports = add(-1);
 
-},{"./add":16}],55:[function(require,module,exports){
+},{"./add":46}],85:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -33369,7 +39607,7 @@ module.exports = _curry2(function defaultTo(d, v) {
   return v == null || v !== v ? d : v;
 });
 
-},{"./internal/_curry2":114}],56:[function(require,module,exports){
+},{"./internal/_curry2":144}],86:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -33400,7 +39638,7 @@ module.exports = _curry3(function descend(fn, a, b) {
   return aa > bb ? -1 : aa < bb ? 1 : 0;
 });
 
-},{"./internal/_curry3":115}],57:[function(require,module,exports){
+},{"./internal/_curry3":145}],87:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 
@@ -33438,7 +39676,7 @@ module.exports = _curry2(function difference(first, second) {
   return out;
 });
 
-},{"./internal/_contains":110,"./internal/_curry2":114}],58:[function(require,module,exports){
+},{"./internal/_contains":140,"./internal/_curry2":144}],88:[function(require,module,exports){
 var _containsWith = require('./internal/_containsWith');
 var _curry3 = require('./internal/_curry3');
 
@@ -33479,7 +39717,7 @@ module.exports = _curry3(function differenceWith(pred, first, second) {
   return out;
 });
 
-},{"./internal/_containsWith":111,"./internal/_curry3":115}],59:[function(require,module,exports){
+},{"./internal/_containsWith":141,"./internal/_curry3":145}],89:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -33508,7 +39746,7 @@ module.exports = _curry2(function dissoc(prop, obj) {
   return result;
 });
 
-},{"./internal/_curry2":114}],60:[function(require,module,exports){
+},{"./internal/_curry2":144}],90:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var assoc = require('./assoc');
 var dissoc = require('./dissoc');
@@ -33545,7 +39783,7 @@ module.exports = _curry2(function dissocPath(path, obj) {
   }
 });
 
-},{"./assoc":31,"./dissoc":59,"./internal/_curry2":114}],61:[function(require,module,exports){
+},{"./assoc":61,"./dissoc":89,"./internal/_curry2":144}],91:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -33573,7 +39811,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function divide(a, b) { return a / b; });
 
-},{"./internal/_curry2":114}],62:[function(require,module,exports){
+},{"./internal/_curry2":144}],92:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdrop = require('./internal/_xdrop');
@@ -33608,7 +39846,7 @@ module.exports = _curry2(_dispatchable(['drop'], _xdrop, function drop(n, xs) {
   return slice(Math.max(0, n), Infinity, xs);
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xdrop":154,"./slice":265}],63:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xdrop":184,"./slice":295}],93:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _dropLast = require('./internal/_dropLast');
@@ -33638,7 +39876,7 @@ var _xdropLast = require('./internal/_xdropLast');
  */
 module.exports = _curry2(_dispatchable([], _xdropLast, _dropLast));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_dropLast":118,"./internal/_xdropLast":155}],64:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_dropLast":148,"./internal/_xdropLast":185}],94:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _dropLastWhile = require('./internal/_dropLastWhile');
@@ -33669,7 +39907,7 @@ var _xdropLastWhile = require('./internal/_xdropLastWhile');
  */
 module.exports = _curry2(_dispatchable([], _xdropLastWhile, _dropLastWhile));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_dropLastWhile":119,"./internal/_xdropLastWhile":156}],65:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_dropLastWhile":149,"./internal/_xdropLastWhile":186}],95:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdropRepeatsWith = require('./internal/_xdropRepeatsWith');
@@ -33697,7 +39935,7 @@ var equals = require('./equals');
  */
 module.exports = _curry1(_dispatchable([], _xdropRepeatsWith(equals), dropRepeatsWith(equals)));
 
-},{"./dropRepeatsWith":66,"./equals":72,"./internal/_curry1":113,"./internal/_dispatchable":117,"./internal/_xdropRepeatsWith":157}],66:[function(require,module,exports){
+},{"./dropRepeatsWith":96,"./equals":102,"./internal/_curry1":143,"./internal/_dispatchable":147,"./internal/_xdropRepeatsWith":187}],96:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdropRepeatsWith = require('./internal/_xdropRepeatsWith');
@@ -33742,7 +39980,7 @@ module.exports = _curry2(_dispatchable([], _xdropRepeatsWith, function dropRepea
 }));
 
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xdropRepeatsWith":157,"./last":185}],67:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xdropRepeatsWith":187,"./last":215}],97:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xdropWhile = require('./internal/_xdropWhile');
@@ -33782,7 +40020,7 @@ module.exports = _curry2(_dispatchable(['dropWhile'], _xdropWhile, function drop
   return Array.prototype.slice.call(list, idx);
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xdropWhile":158}],68:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xdropWhile":188}],98:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isFunction = require('./internal/_isFunction');
 var lift = require('./lift');
@@ -33824,7 +40062,7 @@ module.exports = _curry2(function either(f, g) {
     lift(or)(f, g);
 });
 
-},{"./internal/_curry2":114,"./internal/_isFunction":130,"./lift":192,"./or":225}],69:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_isFunction":160,"./lift":222,"./or":255}],99:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isArguments = require('./internal/_isArguments');
 var _isArray = require('./internal/_isArray');
@@ -33873,7 +40111,7 @@ module.exports = _curry1(function empty(x) {
   );
 });
 
-},{"./internal/_curry1":113,"./internal/_isArguments":128,"./internal/_isArray":129,"./internal/_isObject":133,"./internal/_isString":136}],70:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_isArguments":158,"./internal/_isArray":159,"./internal/_isObject":163,"./internal/_isString":166}],100:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 
@@ -33899,7 +40137,7 @@ module.exports = _curry3(function eqBy(f, x, y) {
   return equals(f(x), f(y));
 });
 
-},{"./equals":72,"./internal/_curry3":115}],71:[function(require,module,exports){
+},{"./equals":102,"./internal/_curry3":145}],101:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 
@@ -33929,7 +40167,7 @@ module.exports = _curry3(function eqProps(prop, obj1, obj2) {
   return equals(obj1[prop], obj2[prop]);
 });
 
-},{"./equals":72,"./internal/_curry3":115}],72:[function(require,module,exports){
+},{"./equals":102,"./internal/_curry3":145}],102:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _equals = require('./internal/_equals');
 
@@ -33963,7 +40201,7 @@ module.exports = _curry2(function equals(a, b) {
   return _equals(a, b, [], []);
 });
 
-},{"./internal/_curry2":114,"./internal/_equals":120}],73:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_equals":150}],103:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -34007,7 +40245,7 @@ module.exports = _curry2(function evolve(transformations, object) {
   return result;
 });
 
-},{"./internal/_curry2":114}],74:[function(require,module,exports){
+},{"./internal/_curry2":144}],104:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _filter = require('./internal/_filter');
@@ -34057,7 +40295,7 @@ module.exports = _curry2(_dispatchable(['filter'], _xfilter, function(pred, filt
   );
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_filter":121,"./internal/_isObject":133,"./internal/_reduce":145,"./internal/_xfilter":160,"./keys":183}],75:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_filter":151,"./internal/_isObject":163,"./internal/_reduce":175,"./internal/_xfilter":190,"./keys":213}],105:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfind = require('./internal/_xfind');
@@ -34098,7 +40336,7 @@ module.exports = _curry2(_dispatchable(['find'], _xfind, function find(fn, list)
   }
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xfind":161}],76:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xfind":191}],106:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfindIndex = require('./internal/_xfindIndex');
@@ -34138,7 +40376,7 @@ module.exports = _curry2(_dispatchable([], _xfindIndex, function findIndex(fn, l
   return -1;
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xfindIndex":162}],77:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xfindIndex":192}],107:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfindLast = require('./internal/_xfindLast');
@@ -34176,7 +40414,7 @@ module.exports = _curry2(_dispatchable([], _xfindLast, function findLast(fn, lis
   }
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xfindLast":163}],78:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xfindLast":193}],108:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xfindLastIndex = require('./internal/_xfindLastIndex');
@@ -34215,7 +40453,7 @@ module.exports = _curry2(_dispatchable([], _xfindLastIndex, function findLastInd
   return -1;
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xfindLastIndex":164}],79:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xfindLastIndex":194}],109:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _makeFlat = require('./internal/_makeFlat');
 
@@ -34239,7 +40477,7 @@ var _makeFlat = require('./internal/_makeFlat');
  */
 module.exports = _curry1(_makeFlat(true));
 
-},{"./internal/_curry1":113,"./internal/_makeFlat":138}],80:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_makeFlat":168}],110:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curry = require('./curry');
 
@@ -34273,7 +40511,7 @@ module.exports = _curry1(function flip(fn) {
   });
 });
 
-},{"./curry":52,"./internal/_curry1":113}],81:[function(require,module,exports){
+},{"./curry":82,"./internal/_curry1":143}],111:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry2 = require('./internal/_curry2');
 
@@ -34322,7 +40560,7 @@ module.exports = _curry2(_checkForMethod('forEach', function forEach(fn, list) {
   return list;
 }));
 
-},{"./internal/_checkForMethod":105,"./internal/_curry2":114}],82:[function(require,module,exports){
+},{"./internal/_checkForMethod":135,"./internal/_curry2":144}],112:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var keys = require('./keys');
 
@@ -34360,7 +40598,7 @@ module.exports = _curry2(function forEachObjIndexed(fn, obj) {
   return obj;
 });
 
-},{"./internal/_curry2":114,"./keys":183}],83:[function(require,module,exports){
+},{"./internal/_curry2":144,"./keys":213}],113:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -34390,7 +40628,7 @@ module.exports = _curry1(function fromPairs(pairs) {
   return result;
 });
 
-},{"./internal/_curry1":113}],84:[function(require,module,exports){
+},{"./internal/_curry1":143}],114:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry2 = require('./internal/_curry2');
 var reduceBy = require('./reduceBy');
@@ -34443,7 +40681,7 @@ module.exports = _curry2(_checkForMethod('groupBy', reduceBy(function(acc, item)
   return acc;
 }, null)));
 
-},{"./internal/_checkForMethod":105,"./internal/_curry2":114,"./reduceBy":253}],85:[function(require,module,exports){
+},{"./internal/_checkForMethod":135,"./internal/_curry2":144,"./reduceBy":283}],115:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 /**
@@ -34487,7 +40725,7 @@ module.exports = _curry2(function(fn, list) {
   return res;
 });
 
-},{"./internal/_curry2":114}],86:[function(require,module,exports){
+},{"./internal/_curry2":144}],116:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -34514,7 +40752,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function gt(a, b) { return a > b; });
 
-},{"./internal/_curry2":114}],87:[function(require,module,exports){
+},{"./internal/_curry2":144}],117:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -34541,7 +40779,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function gte(a, b) { return a >= b; });
 
-},{"./internal/_curry2":114}],88:[function(require,module,exports){
+},{"./internal/_curry2":144}],118:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _has = require('./internal/_has');
 
@@ -34572,7 +40810,7 @@ var _has = require('./internal/_has');
  */
 module.exports = _curry2(_has);
 
-},{"./internal/_curry2":114,"./internal/_has":125}],89:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_has":155}],119:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -34606,7 +40844,7 @@ module.exports = _curry2(function hasIn(prop, obj) {
   return prop in obj;
 });
 
-},{"./internal/_curry2":114}],90:[function(require,module,exports){
+},{"./internal/_curry2":144}],120:[function(require,module,exports){
 var nth = require('./nth');
 
 
@@ -34633,7 +40871,7 @@ var nth = require('./nth');
  */
 module.exports = nth(0);
 
-},{"./nth":219}],91:[function(require,module,exports){
+},{"./nth":249}],121:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -34671,7 +40909,7 @@ module.exports = _curry2(function identical(a, b) {
   }
 });
 
-},{"./internal/_curry2":114}],92:[function(require,module,exports){
+},{"./internal/_curry2":144}],122:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _identity = require('./internal/_identity');
 
@@ -34697,7 +40935,7 @@ var _identity = require('./internal/_identity');
  */
 module.exports = _curry1(_identity);
 
-},{"./internal/_curry1":113,"./internal/_identity":126}],93:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_identity":156}],123:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var curryN = require('./curryN');
 
@@ -34735,7 +40973,7 @@ module.exports = _curry3(function ifElse(condition, onTrue, onFalse) {
   );
 });
 
-},{"./curryN":53,"./internal/_curry3":115}],94:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry3":145}],124:[function(require,module,exports){
 var add = require('./add');
 
 
@@ -34756,7 +40994,7 @@ var add = require('./add');
  */
 module.exports = add(1);
 
-},{"./add":16}],95:[function(require,module,exports){
+},{"./add":46}],125:[function(require,module,exports){
 var reduceBy = require('./reduceBy');
 
 
@@ -34784,7 +41022,7 @@ var reduceBy = require('./reduceBy');
  */
 module.exports = reduceBy(function(acc, elem) { return elem; }, null);
 
-},{"./reduceBy":253}],96:[function(require,module,exports){
+},{"./reduceBy":283}],126:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _indexOf = require('./internal/_indexOf');
 var _isArray = require('./internal/_isArray');
@@ -34815,7 +41053,7 @@ module.exports = _curry2(function indexOf(target, xs) {
     _indexOf(xs, target, 0);
 });
 
-},{"./internal/_curry2":114,"./internal/_indexOf":127,"./internal/_isArray":129}],97:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_indexOf":157,"./internal/_isArray":159}],127:[function(require,module,exports){
 var slice = require('./slice');
 
 
@@ -34845,7 +41083,7 @@ var slice = require('./slice');
  */
 module.exports = slice(0, -1);
 
-},{"./slice":265}],98:[function(require,module,exports){
+},{"./slice":295}],128:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -34874,7 +41112,7 @@ module.exports = _curry3(function insert(idx, elt, list) {
   return result;
 });
 
-},{"./internal/_curry3":115}],99:[function(require,module,exports){
+},{"./internal/_curry3":145}],129:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -34903,7 +41141,7 @@ module.exports = _curry3(function insertAll(idx, elts, list) {
                    Array.prototype.slice.call(list, idx));
 });
 
-},{"./internal/_curry3":115}],100:[function(require,module,exports){
+},{"./internal/_curry3":145}],130:[function(require,module,exports){
 var _contains = require('./_contains');
 
 
@@ -35076,7 +41314,7 @@ module.exports = (function() {
   return _Set;
 }());
 
-},{"./_contains":110}],101:[function(require,module,exports){
+},{"./_contains":140}],131:[function(require,module,exports){
 module.exports = function _aperture(n, list) {
   var idx = 0;
   var limit = list.length - (n - 1);
@@ -35088,7 +41326,7 @@ module.exports = function _aperture(n, list) {
   return acc;
 };
 
-},{}],102:[function(require,module,exports){
+},{}],132:[function(require,module,exports){
 module.exports = function _arity(n, fn) {
   /* eslint-disable no-unused-vars */
   switch (n) {
@@ -35107,7 +41345,7 @@ module.exports = function _arity(n, fn) {
   }
 };
 
-},{}],103:[function(require,module,exports){
+},{}],133:[function(require,module,exports){
 module.exports = function _arrayFromIterator(iter) {
   var list = [];
   var next;
@@ -35117,13 +41355,13 @@ module.exports = function _arrayFromIterator(iter) {
   return list;
 };
 
-},{}],104:[function(require,module,exports){
+},{}],134:[function(require,module,exports){
 var _objectAssign = require('./_objectAssign');
 
 module.exports =
   typeof Object.assign === 'function' ? Object.assign : _objectAssign;
 
-},{"./_objectAssign":140}],105:[function(require,module,exports){
+},{"./_objectAssign":170}],135:[function(require,module,exports){
 var _isArray = require('./_isArray');
 
 
@@ -35150,7 +41388,7 @@ module.exports = function _checkForMethod(methodname, fn) {
   };
 };
 
-},{"./_isArray":129}],106:[function(require,module,exports){
+},{"./_isArray":159}],136:[function(require,module,exports){
 var _cloneRegExp = require('./_cloneRegExp');
 var type = require('../type');
 
@@ -35192,7 +41430,7 @@ module.exports = function _clone(value, refFrom, refTo, deep) {
   }
 };
 
-},{"../type":295,"./_cloneRegExp":107}],107:[function(require,module,exports){
+},{"../type":325,"./_cloneRegExp":137}],137:[function(require,module,exports){
 module.exports = function _cloneRegExp(pattern) {
   return new RegExp(pattern.source, (pattern.global     ? 'g' : '') +
                                     (pattern.ignoreCase ? 'i' : '') +
@@ -35201,14 +41439,14 @@ module.exports = function _cloneRegExp(pattern) {
                                     (pattern.unicode    ? 'u' : ''));
 };
 
-},{}],108:[function(require,module,exports){
+},{}],138:[function(require,module,exports){
 module.exports = function _complement(f) {
   return function() {
     return !f.apply(this, arguments);
   };
 };
 
-},{}],109:[function(require,module,exports){
+},{}],139:[function(require,module,exports){
 /**
  * Private `concat` function to merge two array-like objects.
  *
@@ -35241,7 +41479,7 @@ module.exports = function _concat(set1, set2) {
   return result;
 };
 
-},{}],110:[function(require,module,exports){
+},{}],140:[function(require,module,exports){
 var _indexOf = require('./_indexOf');
 
 
@@ -35249,7 +41487,7 @@ module.exports = function _contains(a, list) {
   return _indexOf(list, a, 0) >= 0;
 };
 
-},{"./_indexOf":127}],111:[function(require,module,exports){
+},{"./_indexOf":157}],141:[function(require,module,exports){
 module.exports = function _containsWith(pred, x, list) {
   var idx = 0;
   var len = list.length;
@@ -35263,7 +41501,7 @@ module.exports = function _containsWith(pred, x, list) {
   return false;
 };
 
-},{}],112:[function(require,module,exports){
+},{}],142:[function(require,module,exports){
 var _arity = require('./_arity');
 var _curry2 = require('./_curry2');
 
@@ -35276,7 +41514,7 @@ module.exports = function _createPartialApplicator(concat) {
   });
 };
 
-},{"./_arity":102,"./_curry2":114}],113:[function(require,module,exports){
+},{"./_arity":132,"./_curry2":144}],143:[function(require,module,exports){
 var _isPlaceholder = require('./_isPlaceholder');
 
 
@@ -35298,7 +41536,7 @@ module.exports = function _curry1(fn) {
   };
 };
 
-},{"./_isPlaceholder":134}],114:[function(require,module,exports){
+},{"./_isPlaceholder":164}],144:[function(require,module,exports){
 var _curry1 = require('./_curry1');
 var _isPlaceholder = require('./_isPlaceholder');
 
@@ -35328,7 +41566,7 @@ module.exports = function _curry2(fn) {
   };
 };
 
-},{"./_curry1":113,"./_isPlaceholder":134}],115:[function(require,module,exports){
+},{"./_curry1":143,"./_isPlaceholder":164}],145:[function(require,module,exports){
 var _curry1 = require('./_curry1');
 var _curry2 = require('./_curry2');
 var _isPlaceholder = require('./_isPlaceholder');
@@ -35368,7 +41606,7 @@ module.exports = function _curry3(fn) {
   };
 };
 
-},{"./_curry1":113,"./_curry2":114,"./_isPlaceholder":134}],116:[function(require,module,exports){
+},{"./_curry1":143,"./_curry2":144,"./_isPlaceholder":164}],146:[function(require,module,exports){
 var _arity = require('./_arity');
 var _isPlaceholder = require('./_isPlaceholder');
 
@@ -35410,7 +41648,7 @@ module.exports = function _curryN(length, received, fn) {
   };
 };
 
-},{"./_arity":102,"./_isPlaceholder":134}],117:[function(require,module,exports){
+},{"./_arity":132,"./_isPlaceholder":164}],147:[function(require,module,exports){
 var _isArray = require('./_isArray');
 var _isTransformer = require('./_isTransformer');
 
@@ -35453,14 +41691,14 @@ module.exports = function _dispatchable(methodNames, xf, fn) {
   };
 };
 
-},{"./_isArray":129,"./_isTransformer":137}],118:[function(require,module,exports){
+},{"./_isArray":159,"./_isTransformer":167}],148:[function(require,module,exports){
 var take = require('../take');
 
 module.exports = function dropLast(n, xs) {
   return take(n < xs.length ? xs.length - n : 0, xs);
 };
 
-},{"../take":278}],119:[function(require,module,exports){
+},{"../take":308}],149:[function(require,module,exports){
 module.exports = function dropLastWhile(pred, list) {
   var idx = list.length - 1;
   while (idx >= 0 && pred(list[idx])) {
@@ -35469,7 +41707,7 @@ module.exports = function dropLastWhile(pred, list) {
   return Array.prototype.slice.call(list, 0, idx + 1);
 };
 
-},{}],120:[function(require,module,exports){
+},{}],150:[function(require,module,exports){
 var _arrayFromIterator = require('./_arrayFromIterator');
 var _functionName = require('./_functionName');
 var _has = require('./_has');
@@ -35580,7 +41818,7 @@ module.exports = function _equals(a, b, stackA, stackB) {
   return true;
 };
 
-},{"../identical":91,"../keys":183,"../type":295,"./_arrayFromIterator":103,"./_functionName":124,"./_has":125}],121:[function(require,module,exports){
+},{"../identical":121,"../keys":213,"../type":325,"./_arrayFromIterator":133,"./_functionName":154,"./_has":155}],151:[function(require,module,exports){
 module.exports = function _filter(fn, list) {
   var idx = 0;
   var len = list.length;
@@ -35595,7 +41833,7 @@ module.exports = function _filter(fn, list) {
   return result;
 };
 
-},{}],122:[function(require,module,exports){
+},{}],152:[function(require,module,exports){
 var _forceReduced = require('./_forceReduced');
 var _reduce = require('./_reduce');
 var _xfBase = require('./_xfBase');
@@ -35629,7 +41867,7 @@ module.exports = (function() {
   };
 }());
 
-},{"../isArrayLike":178,"./_forceReduced":123,"./_reduce":145,"./_xfBase":159}],123:[function(require,module,exports){
+},{"../isArrayLike":208,"./_forceReduced":153,"./_reduce":175,"./_xfBase":189}],153:[function(require,module,exports){
 module.exports = function _forceReduced(x) {
   return {
     '@@transducer/value': x,
@@ -35637,22 +41875,22 @@ module.exports = function _forceReduced(x) {
   };
 };
 
-},{}],124:[function(require,module,exports){
+},{}],154:[function(require,module,exports){
 module.exports = function _functionName(f) {
   // String(x => x) evaluates to "x => x", so the pattern may not match.
   var match = String(f).match(/^function (\w*)/);
   return match == null ? '' : match[1];
 };
 
-},{}],125:[function(require,module,exports){
+},{}],155:[function(require,module,exports){
 module.exports = function _has(prop, obj) {
   return Object.prototype.hasOwnProperty.call(obj, prop);
 };
 
-},{}],126:[function(require,module,exports){
+},{}],156:[function(require,module,exports){
 module.exports = function _identity(x) { return x; };
 
-},{}],127:[function(require,module,exports){
+},{}],157:[function(require,module,exports){
 var equals = require('../equals');
 
 
@@ -35711,7 +41949,7 @@ module.exports = function _indexOf(list, a, idx) {
   return -1;
 };
 
-},{"../equals":72}],128:[function(require,module,exports){
+},{"../equals":102}],158:[function(require,module,exports){
 var _has = require('./_has');
 
 
@@ -35722,7 +41960,7 @@ module.exports = (function() {
     function _isArguments(x) { return _has('callee', x); };
 }());
 
-},{"./_has":125}],129:[function(require,module,exports){
+},{"./_has":155}],159:[function(require,module,exports){
 /**
  * Tests whether or not an object is an array.
  *
@@ -35741,12 +41979,12 @@ module.exports = Array.isArray || function _isArray(val) {
           Object.prototype.toString.call(val) === '[object Array]');
 };
 
-},{}],130:[function(require,module,exports){
+},{}],160:[function(require,module,exports){
 module.exports = function _isFunction(x) {
   return Object.prototype.toString.call(x) === '[object Function]';
 };
 
-},{}],131:[function(require,module,exports){
+},{}],161:[function(require,module,exports){
 /**
  * Determine if the passed argument is an integer.
  *
@@ -35759,39 +41997,39 @@ module.exports = Number.isInteger || function _isInteger(n) {
   return (n << 0) === n;
 };
 
-},{}],132:[function(require,module,exports){
+},{}],162:[function(require,module,exports){
 module.exports = function _isNumber(x) {
   return Object.prototype.toString.call(x) === '[object Number]';
 };
 
-},{}],133:[function(require,module,exports){
+},{}],163:[function(require,module,exports){
 module.exports = function _isObject(x) {
   return Object.prototype.toString.call(x) === '[object Object]';
 };
 
-},{}],134:[function(require,module,exports){
+},{}],164:[function(require,module,exports){
 module.exports = function _isPlaceholder(a) {
   return a != null &&
          typeof a === 'object' &&
          a['@@functional/placeholder'] === true;
 };
 
-},{}],135:[function(require,module,exports){
+},{}],165:[function(require,module,exports){
 module.exports = function _isRegExp(x) {
   return Object.prototype.toString.call(x) === '[object RegExp]';
 };
 
-},{}],136:[function(require,module,exports){
+},{}],166:[function(require,module,exports){
 module.exports = function _isString(x) {
   return Object.prototype.toString.call(x) === '[object String]';
 };
 
-},{}],137:[function(require,module,exports){
+},{}],167:[function(require,module,exports){
 module.exports = function _isTransformer(obj) {
   return typeof obj['@@transducer/step'] === 'function';
 };
 
-},{}],138:[function(require,module,exports){
+},{}],168:[function(require,module,exports){
 var isArrayLike = require('../isArrayLike');
 
 
@@ -35826,7 +42064,7 @@ module.exports = function _makeFlat(recursive) {
   };
 };
 
-},{"../isArrayLike":178}],139:[function(require,module,exports){
+},{"../isArrayLike":208}],169:[function(require,module,exports){
 module.exports = function _map(fn, functor) {
   var idx = 0;
   var len = functor.length;
@@ -35838,7 +42076,7 @@ module.exports = function _map(fn, functor) {
   return result;
 };
 
-},{}],140:[function(require,module,exports){
+},{}],170:[function(require,module,exports){
 var _has = require('./_has');
 
 // Based on https://developer.mozilla.org/en/docs/Web/JavaScript/Reference/Global_Objects/Object/assign
@@ -35864,17 +42102,17 @@ module.exports = function _objectAssign(target) {
   return output;
 };
 
-},{"./_has":125}],141:[function(require,module,exports){
+},{"./_has":155}],171:[function(require,module,exports){
 module.exports = function _of(x) { return [x]; };
 
-},{}],142:[function(require,module,exports){
+},{}],172:[function(require,module,exports){
 module.exports = function _pipe(f, g) {
   return function() {
     return g.call(this, f.apply(this, arguments));
   };
 };
 
-},{}],143:[function(require,module,exports){
+},{}],173:[function(require,module,exports){
 module.exports = function _pipeP(f, g) {
   return function() {
     var ctx = this;
@@ -35884,7 +42122,7 @@ module.exports = function _pipeP(f, g) {
   };
 };
 
-},{}],144:[function(require,module,exports){
+},{}],174:[function(require,module,exports){
 module.exports = function _quote(s) {
   var escaped = s
     .replace(/\\/g, '\\\\')
@@ -35899,7 +42137,7 @@ module.exports = function _quote(s) {
   return '"' + escaped.replace(/"/g, '\\"') + '"';
 };
 
-},{}],145:[function(require,module,exports){
+},{}],175:[function(require,module,exports){
 var _xwrap = require('./_xwrap');
 var bind = require('../bind');
 var isArrayLike = require('../isArrayLike');
@@ -35958,7 +42196,7 @@ module.exports = (function() {
   };
 }());
 
-},{"../bind":34,"../isArrayLike":178,"./_xwrap":169}],146:[function(require,module,exports){
+},{"../bind":64,"../isArrayLike":208,"./_xwrap":199}],176:[function(require,module,exports){
 module.exports = function _reduced(x) {
   return x && x['@@transducer/reduced'] ? x :
     {
@@ -35967,7 +42205,7 @@ module.exports = function _reduced(x) {
     };
 };
 
-},{}],147:[function(require,module,exports){
+},{}],177:[function(require,module,exports){
 var _assign = require('./_assign');
 var _identity = require('./_identity');
 var _isTransformer = require('./_isTransformer');
@@ -36017,7 +42255,7 @@ module.exports = (function() {
   };
 }());
 
-},{"../isArrayLike":178,"../objOf":221,"./_assign":104,"./_identity":126,"./_isTransformer":137}],148:[function(require,module,exports){
+},{"../isArrayLike":208,"../objOf":251,"./_assign":134,"./_identity":156,"./_isTransformer":167}],178:[function(require,module,exports){
 /**
  * Polyfill from <https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/toISOString>.
  */
@@ -36041,7 +42279,7 @@ module.exports = (function() {
     };
 }());
 
-},{}],149:[function(require,module,exports){
+},{}],179:[function(require,module,exports){
 var _contains = require('./_contains');
 var _map = require('./_map');
 var _quote = require('./_quote');
@@ -36089,7 +42327,7 @@ module.exports = function _toString(x, seen) {
   }
 };
 
-},{"../keys":183,"../reject":257,"./_contains":110,"./_map":139,"./_quote":144,"./_toISOString":148}],150:[function(require,module,exports){
+},{"../keys":213,"../reject":287,"./_contains":140,"./_map":169,"./_quote":174,"./_toISOString":178}],180:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -36119,7 +42357,7 @@ module.exports = (function() {
   return _curry2(function _xall(f, xf) { return new XAll(f, xf); });
 }());
 
-},{"./_curry2":114,"./_reduced":146,"./_xfBase":159}],151:[function(require,module,exports){
+},{"./_curry2":144,"./_reduced":176,"./_xfBase":189}],181:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -36149,7 +42387,7 @@ module.exports = (function() {
   return _curry2(function _xany(f, xf) { return new XAny(f, xf); });
 }());
 
-},{"./_curry2":114,"./_reduced":146,"./_xfBase":159}],152:[function(require,module,exports){
+},{"./_curry2":144,"./_reduced":176,"./_xfBase":189}],182:[function(require,module,exports){
 var _concat = require('./_concat');
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
@@ -36187,7 +42425,7 @@ module.exports = (function() {
   return _curry2(function _xaperture(n, xf) { return new XAperture(n, xf); });
 }());
 
-},{"./_concat":109,"./_curry2":114,"./_xfBase":159}],153:[function(require,module,exports){
+},{"./_concat":139,"./_curry2":144,"./_xfBase":189}],183:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _flatCat = require('./_flatCat');
 var map = require('../map');
@@ -36197,7 +42435,7 @@ module.exports = _curry2(function _xchain(f, xf) {
   return map(f, _flatCat(xf));
 });
 
-},{"../map":196,"./_curry2":114,"./_flatCat":122}],154:[function(require,module,exports){
+},{"../map":226,"./_curry2":144,"./_flatCat":152}],184:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36220,7 +42458,7 @@ module.exports = (function() {
   return _curry2(function _xdrop(n, xf) { return new XDrop(n, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],155:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],185:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36256,7 +42494,7 @@ module.exports = (function() {
   return _curry2(function _xdropLast(n, xf) { return new XDropLast(n, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],156:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],186:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduce = require('./_reduce');
 var _xfBase = require('./_xfBase');
@@ -36293,7 +42531,7 @@ module.exports = (function() {
   return _curry2(function _xdropLastWhile(fn, xf) { return new XDropLastWhile(fn, xf); });
 }());
 
-},{"./_curry2":114,"./_reduce":145,"./_xfBase":159}],157:[function(require,module,exports){
+},{"./_curry2":144,"./_reduce":175,"./_xfBase":189}],187:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36322,7 +42560,7 @@ module.exports = (function() {
   return _curry2(function _xdropRepeatsWith(pred, xf) { return new XDropRepeatsWith(pred, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],158:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],188:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36347,7 +42585,7 @@ module.exports = (function() {
   return _curry2(function _xdropWhile(f, xf) { return new XDropWhile(f, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],159:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],189:[function(require,module,exports){
 module.exports = {
   init: function() {
     return this.xf['@@transducer/init']();
@@ -36357,7 +42595,7 @@ module.exports = {
   }
 };
 
-},{}],160:[function(require,module,exports){
+},{}],190:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36376,7 +42614,7 @@ module.exports = (function() {
   return _curry2(function _xfilter(f, xf) { return new XFilter(f, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],161:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],191:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -36406,7 +42644,7 @@ module.exports = (function() {
   return _curry2(function _xfind(f, xf) { return new XFind(f, xf); });
 }());
 
-},{"./_curry2":114,"./_reduced":146,"./_xfBase":159}],162:[function(require,module,exports){
+},{"./_curry2":144,"./_reduced":176,"./_xfBase":189}],192:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -36438,7 +42676,7 @@ module.exports = (function() {
   return _curry2(function _xfindIndex(f, xf) { return new XFindIndex(f, xf); });
 }());
 
-},{"./_curry2":114,"./_reduced":146,"./_xfBase":159}],163:[function(require,module,exports){
+},{"./_curry2":144,"./_reduced":176,"./_xfBase":189}],193:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36462,7 +42700,7 @@ module.exports = (function() {
   return _curry2(function _xfindLast(f, xf) { return new XFindLast(f, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],164:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],194:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36489,7 +42727,7 @@ module.exports = (function() {
   return _curry2(function _xfindLastIndex(f, xf) { return new XFindLastIndex(f, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],165:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],195:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _xfBase = require('./_xfBase');
 
@@ -36508,7 +42746,7 @@ module.exports = (function() {
   return _curry2(function _xmap(f, xf) { return new XMap(f, xf); });
 }());
 
-},{"./_curry2":114,"./_xfBase":159}],166:[function(require,module,exports){
+},{"./_curry2":144,"./_xfBase":189}],196:[function(require,module,exports){
 var _curryN = require('./_curryN');
 var _has = require('./_has');
 var _xfBase = require('./_xfBase');
@@ -36550,7 +42788,7 @@ module.exports = (function() {
                  });
 }());
 
-},{"./_curryN":116,"./_has":125,"./_xfBase":159}],167:[function(require,module,exports){
+},{"./_curryN":146,"./_has":155,"./_xfBase":189}],197:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -36572,7 +42810,7 @@ module.exports = (function() {
   return _curry2(function _xtake(n, xf) { return new XTake(n, xf); });
 }());
 
-},{"./_curry2":114,"./_reduced":146,"./_xfBase":159}],168:[function(require,module,exports){
+},{"./_curry2":144,"./_reduced":176,"./_xfBase":189}],198:[function(require,module,exports){
 var _curry2 = require('./_curry2');
 var _reduced = require('./_reduced');
 var _xfBase = require('./_xfBase');
@@ -36592,7 +42830,7 @@ module.exports = (function() {
   return _curry2(function _xtakeWhile(f, xf) { return new XTakeWhile(f, xf); });
 }());
 
-},{"./_curry2":114,"./_reduced":146,"./_xfBase":159}],169:[function(require,module,exports){
+},{"./_curry2":144,"./_reduced":176,"./_xfBase":189}],199:[function(require,module,exports){
 module.exports = (function() {
   function XWrap(fn) {
     this.f = fn;
@@ -36608,7 +42846,7 @@ module.exports = (function() {
   return function _xwrap(fn) { return new XWrap(fn); };
 }());
 
-},{}],170:[function(require,module,exports){
+},{}],200:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 var _filter = require('./internal/_filter');
@@ -36645,7 +42883,7 @@ module.exports = _curry2(function intersection(list1, list2) {
   return uniq(_filter(flip(_contains)(lookupList), filteredList));
 });
 
-},{"./flip":80,"./internal/_contains":110,"./internal/_curry2":114,"./internal/_filter":121,"./uniq":302}],171:[function(require,module,exports){
+},{"./flip":110,"./internal/_contains":140,"./internal/_curry2":144,"./internal/_filter":151,"./uniq":332}],201:[function(require,module,exports){
 var _containsWith = require('./internal/_containsWith');
 var _curry3 = require('./internal/_curry3');
 var uniqWith = require('./uniqWith');
@@ -36706,7 +42944,7 @@ module.exports = _curry3(function intersectionWith(pred, list1, list2) {
   return uniqWith(pred, results);
 });
 
-},{"./internal/_containsWith":111,"./internal/_curry3":115,"./uniqWith":304}],172:[function(require,module,exports){
+},{"./internal/_containsWith":141,"./internal/_curry3":145,"./uniqWith":334}],202:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry2 = require('./internal/_curry2');
 
@@ -36743,7 +42981,7 @@ module.exports = _curry2(_checkForMethod('intersperse', function intersperse(sep
   return out;
 }));
 
-},{"./internal/_checkForMethod":105,"./internal/_curry2":114}],173:[function(require,module,exports){
+},{"./internal/_checkForMethod":135,"./internal/_curry2":144}],203:[function(require,module,exports){
 var _clone = require('./internal/_clone');
 var _curry3 = require('./internal/_curry3');
 var _isTransformer = require('./internal/_isTransformer');
@@ -36794,7 +43032,7 @@ module.exports = _curry3(function into(acc, xf, list) {
     _reduce(xf(_stepCat(acc)), _clone(acc, [], [], false), list);
 });
 
-},{"./internal/_clone":106,"./internal/_curry3":115,"./internal/_isTransformer":137,"./internal/_reduce":145,"./internal/_stepCat":147}],174:[function(require,module,exports){
+},{"./internal/_clone":136,"./internal/_curry3":145,"./internal/_isTransformer":167,"./internal/_reduce":175,"./internal/_stepCat":177}],204:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
 var keys = require('./keys');
@@ -36838,7 +43076,7 @@ module.exports = _curry1(function invert(obj) {
   return out;
 });
 
-},{"./internal/_curry1":113,"./internal/_has":125,"./keys":183}],175:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_has":155,"./keys":213}],205:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var keys = require('./keys');
 
@@ -36883,7 +43121,7 @@ module.exports = _curry1(function invertObj(obj) {
   return out;
 });
 
-},{"./internal/_curry1":113,"./keys":183}],176:[function(require,module,exports){
+},{"./internal/_curry1":143,"./keys":213}],206:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isFunction = require('./internal/_isFunction');
 var curryN = require('./curryN');
@@ -36926,7 +43164,7 @@ module.exports = _curry2(function invoker(arity, method) {
   });
 });
 
-},{"./curryN":53,"./internal/_curry2":114,"./internal/_isFunction":130,"./toString":288}],177:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry2":144,"./internal/_isFunction":160,"./toString":318}],207:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -36957,7 +43195,7 @@ module.exports = _curry2(function is(Ctor, val) {
   return val != null && val.constructor === Ctor || val instanceof Ctor;
 });
 
-},{"./internal/_curry2":114}],178:[function(require,module,exports){
+},{"./internal/_curry2":144}],208:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isArray = require('./internal/_isArray');
 var _isString = require('./internal/_isString');
@@ -36996,7 +43234,7 @@ module.exports = _curry1(function isArrayLike(x) {
   return false;
 });
 
-},{"./internal/_curry1":113,"./internal/_isArray":129,"./internal/_isString":136}],179:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_isArray":159,"./internal/_isString":166}],209:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var empty = require('./empty');
 var equals = require('./equals');
@@ -37027,7 +43265,7 @@ module.exports = _curry1(function isEmpty(x) {
   return x != null && equals(x, empty(x));
 });
 
-},{"./empty":69,"./equals":72,"./internal/_curry1":113}],180:[function(require,module,exports){
+},{"./empty":99,"./equals":102,"./internal/_curry1":143}],210:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -37050,7 +43288,7 @@ var _curry1 = require('./internal/_curry1');
  */
 module.exports = _curry1(function isNil(x) { return x == null; });
 
-},{"./internal/_curry1":113}],181:[function(require,module,exports){
+},{"./internal/_curry1":143}],211:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -37075,7 +43313,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(1, 'join');
 
-},{"./invoker":176}],182:[function(require,module,exports){
+},{"./invoker":206}],212:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var converge = require('./converge');
 
@@ -37101,7 +43339,7 @@ module.exports = _curry1(function juxt(fns) {
   return converge(function() { return Array.prototype.slice.call(arguments, 0); }, fns);
 });
 
-},{"./converge":50,"./internal/_curry1":113}],183:[function(require,module,exports){
+},{"./converge":80,"./internal/_curry1":143}],213:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
 var _isArguments = require('./internal/_isArguments');
@@ -37176,7 +43414,7 @@ module.exports = (function() {
     });
 }());
 
-},{"./internal/_curry1":113,"./internal/_has":125,"./internal/_isArguments":128}],184:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_has":155,"./internal/_isArguments":158}],214:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -37209,7 +43447,7 @@ module.exports = _curry1(function keysIn(obj) {
   return ks;
 });
 
-},{"./internal/_curry1":113}],185:[function(require,module,exports){
+},{"./internal/_curry1":143}],215:[function(require,module,exports){
 var nth = require('./nth');
 
 
@@ -37235,7 +43473,7 @@ var nth = require('./nth');
  */
 module.exports = nth(-1);
 
-},{"./nth":219}],186:[function(require,module,exports){
+},{"./nth":249}],216:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isArray = require('./internal/_isArray');
 var equals = require('./equals');
@@ -37275,7 +43513,7 @@ module.exports = _curry2(function lastIndexOf(target, xs) {
   }
 });
 
-},{"./equals":72,"./internal/_curry2":114,"./internal/_isArray":129}],187:[function(require,module,exports){
+},{"./equals":102,"./internal/_curry2":144,"./internal/_isArray":159}],217:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isNumber = require('./internal/_isNumber');
 
@@ -37299,7 +43537,7 @@ module.exports = _curry1(function length(list) {
   return list != null && _isNumber(list.length) ? list.length : NaN;
 });
 
-},{"./internal/_curry1":113,"./internal/_isNumber":132}],188:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_isNumber":162}],218:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var map = require('./map');
 
@@ -37340,7 +43578,7 @@ module.exports = _curry2(function lens(getter, setter) {
   };
 });
 
-},{"./internal/_curry2":114,"./map":196}],189:[function(require,module,exports){
+},{"./internal/_curry2":144,"./map":226}],219:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var lens = require('./lens');
 var nth = require('./nth');
@@ -37371,7 +43609,7 @@ module.exports = _curry1(function lensIndex(n) {
   return lens(nth(n), update(n));
 });
 
-},{"./internal/_curry1":113,"./lens":188,"./nth":219,"./update":308}],190:[function(require,module,exports){
+},{"./internal/_curry1":143,"./lens":218,"./nth":249,"./update":338}],220:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var assocPath = require('./assocPath');
 var lens = require('./lens');
@@ -37406,7 +43644,7 @@ module.exports = _curry1(function lensPath(p) {
   return lens(path(p), assocPath(p));
 });
 
-},{"./assocPath":32,"./internal/_curry1":113,"./lens":188,"./path":231}],191:[function(require,module,exports){
+},{"./assocPath":62,"./internal/_curry1":143,"./lens":218,"./path":261}],221:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var assoc = require('./assoc');
 var lens = require('./lens');
@@ -37437,7 +43675,7 @@ module.exports = _curry1(function lensProp(k) {
   return lens(prop(k), assoc(k));
 });
 
-},{"./assoc":31,"./internal/_curry1":113,"./lens":188,"./prop":245}],192:[function(require,module,exports){
+},{"./assoc":61,"./internal/_curry1":143,"./lens":218,"./prop":275}],222:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var liftN = require('./liftN');
 
@@ -37468,7 +43706,7 @@ module.exports = _curry1(function lift(fn) {
   return liftN(fn.length, fn);
 });
 
-},{"./internal/_curry1":113,"./liftN":193}],193:[function(require,module,exports){
+},{"./internal/_curry1":143,"./liftN":223}],223:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _reduce = require('./internal/_reduce');
 var ap = require('./ap');
@@ -37500,7 +43738,7 @@ module.exports = _curry2(function liftN(arity, fn) {
   });
 });
 
-},{"./ap":25,"./curryN":53,"./internal/_curry2":114,"./internal/_reduce":145,"./map":196}],194:[function(require,module,exports){
+},{"./ap":55,"./curryN":83,"./internal/_curry2":144,"./internal/_reduce":175,"./map":226}],224:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -37527,7 +43765,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function lt(a, b) { return a < b; });
 
-},{"./internal/_curry2":114}],195:[function(require,module,exports){
+},{"./internal/_curry2":144}],225:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -37554,7 +43792,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function lte(a, b) { return a <= b; });
 
-},{"./internal/_curry2":114}],196:[function(require,module,exports){
+},{"./internal/_curry2":144}],226:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _map = require('./internal/_map');
@@ -37615,7 +43853,7 @@ module.exports = _curry2(_dispatchable(['map'], _xmap, function map(fn, functor)
   }
 }));
 
-},{"./curryN":53,"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_map":139,"./internal/_reduce":145,"./internal/_xmap":165,"./keys":183}],197:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_map":169,"./internal/_reduce":175,"./internal/_xmap":195,"./keys":213}],227:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -37666,7 +43904,7 @@ module.exports = _curry3(function mapAccum(fn, acc, list) {
   return [tuple[0], result];
 });
 
-},{"./internal/_curry3":115}],198:[function(require,module,exports){
+},{"./internal/_curry3":145}],228:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -37719,7 +43957,7 @@ module.exports = _curry3(function mapAccumRight(fn, acc, list) {
   return [result, tuple[0]];
 });
 
-},{"./internal/_curry3":115}],199:[function(require,module,exports){
+},{"./internal/_curry3":145}],229:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _reduce = require('./internal/_reduce');
 var keys = require('./keys');
@@ -37753,7 +43991,7 @@ module.exports = _curry2(function mapObjIndexed(fn, obj) {
   }, {}, keys(obj));
 });
 
-},{"./internal/_curry2":114,"./internal/_reduce":145,"./keys":183}],200:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_reduce":175,"./keys":213}],230:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -37782,7 +44020,7 @@ module.exports = _curry2(function match(rx, str) {
   return str.match(rx) || [];
 });
 
-},{"./internal/_curry2":114}],201:[function(require,module,exports){
+},{"./internal/_curry2":144}],231:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isInteger = require('./internal/_isInteger');
 
@@ -37825,7 +44063,7 @@ module.exports = _curry2(function mathMod(m, p) {
   return ((m % p) + p) % p;
 });
 
-},{"./internal/_curry2":114,"./internal/_isInteger":131}],202:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_isInteger":161}],232:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -37848,7 +44086,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function max(a, b) { return b > a ? b : a; });
 
-},{"./internal/_curry2":114}],203:[function(require,module,exports){
+},{"./internal/_curry2":144}],233:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -37880,7 +44118,7 @@ module.exports = _curry3(function maxBy(f, a, b) {
   return f(b) > f(a) ? b : a;
 });
 
-},{"./internal/_curry3":115}],204:[function(require,module,exports){
+},{"./internal/_curry3":145}],234:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var sum = require('./sum');
 
@@ -37904,7 +44142,7 @@ module.exports = _curry1(function mean(list) {
   return sum(list) / list.length;
 });
 
-},{"./internal/_curry1":113,"./sum":274}],205:[function(require,module,exports){
+},{"./internal/_curry1":143,"./sum":304}],235:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var mean = require('./mean');
 
@@ -37937,7 +44175,7 @@ module.exports = _curry1(function median(list) {
   }).slice(idx, idx + width));
 });
 
-},{"./internal/_curry1":113,"./mean":204}],206:[function(require,module,exports){
+},{"./internal/_curry1":143,"./mean":234}],236:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
@@ -37981,7 +44219,7 @@ module.exports = _curry1(function memoize(fn) {
   });
 });
 
-},{"./internal/_arity":102,"./internal/_curry1":113,"./internal/_has":125,"./toString":288}],207:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_curry1":143,"./internal/_has":155,"./toString":318}],237:[function(require,module,exports){
 var _assign = require('./internal/_assign');
 var _curry2 = require('./internal/_curry2');
 
@@ -38013,7 +44251,7 @@ module.exports = _curry2(function merge(l, r) {
   return _assign({}, l, r);
 });
 
-},{"./internal/_assign":104,"./internal/_curry2":114}],208:[function(require,module,exports){
+},{"./internal/_assign":134,"./internal/_curry2":144}],238:[function(require,module,exports){
 var _assign = require('./internal/_assign');
 var _curry1 = require('./internal/_curry1');
 
@@ -38039,7 +44277,7 @@ module.exports = _curry1(function mergeAll(list) {
   return _assign.apply(null, [{}].concat(list));
 });
 
-},{"./internal/_assign":104,"./internal/_curry1":113}],209:[function(require,module,exports){
+},{"./internal/_assign":134,"./internal/_curry1":143}],239:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var mergeWithKey = require('./mergeWithKey');
 
@@ -38074,7 +44312,7 @@ module.exports = _curry3(function mergeWith(fn, l, r) {
   }, l, r);
 });
 
-},{"./internal/_curry3":115,"./mergeWithKey":210}],210:[function(require,module,exports){
+},{"./internal/_curry3":145,"./mergeWithKey":240}],240:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _has = require('./internal/_has');
 
@@ -38125,7 +44363,7 @@ module.exports = _curry3(function mergeWithKey(fn, l, r) {
   return result;
 });
 
-},{"./internal/_curry3":115,"./internal/_has":125}],211:[function(require,module,exports){
+},{"./internal/_curry3":145,"./internal/_has":155}],241:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38148,7 +44386,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function min(a, b) { return b < a ? b : a; });
 
-},{"./internal/_curry2":114}],212:[function(require,module,exports){
+},{"./internal/_curry2":144}],242:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -38180,7 +44418,7 @@ module.exports = _curry3(function minBy(f, a, b) {
   return f(b) < f(a) ? b : a;
 });
 
-},{"./internal/_curry3":115}],213:[function(require,module,exports){
+},{"./internal/_curry3":145}],243:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38211,7 +44449,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function modulo(a, b) { return a % b; });
 
-},{"./internal/_curry2":114}],214:[function(require,module,exports){
+},{"./internal/_curry2":144}],244:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38237,7 +44475,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function multiply(a, b) { return a * b; });
 
-},{"./internal/_curry2":114}],215:[function(require,module,exports){
+},{"./internal/_curry2":144}],245:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38287,7 +44525,7 @@ module.exports = _curry2(function nAry(n, fn) {
   }
 });
 
-},{"./internal/_curry2":114}],216:[function(require,module,exports){
+},{"./internal/_curry2":144}],246:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -38307,7 +44545,7 @@ var _curry1 = require('./internal/_curry1');
  */
 module.exports = _curry1(function negate(n) { return -n; });
 
-},{"./internal/_curry1":113}],217:[function(require,module,exports){
+},{"./internal/_curry1":143}],247:[function(require,module,exports){
 var _complement = require('./internal/_complement');
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
@@ -38339,7 +44577,7 @@ var any = require('./any');
  */
 module.exports = _curry2(_complement(_dispatchable(['any'], _xany, any)));
 
-},{"./any":23,"./internal/_complement":108,"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xany":151}],218:[function(require,module,exports){
+},{"./any":53,"./internal/_complement":138,"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xany":181}],248:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -38366,7 +44604,7 @@ module.exports = _curry1(function not(a) {
   return !a;
 });
 
-},{"./internal/_curry1":113}],219:[function(require,module,exports){
+},{"./internal/_curry1":143}],249:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isString = require('./internal/_isString');
 
@@ -38402,7 +44640,7 @@ module.exports = _curry2(function nth(offset, list) {
   return _isString(list) ? list.charAt(idx) : list[idx];
 });
 
-},{"./internal/_curry2":114,"./internal/_isString":136}],220:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_isString":166}],250:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var curryN = require('./curryN');
 var nth = require('./nth');
@@ -38433,7 +44671,7 @@ module.exports = _curry1(function nthArg(n) {
   });
 });
 
-},{"./curryN":53,"./internal/_curry1":113,"./nth":219}],221:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry1":143,"./nth":249}],251:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38463,7 +44701,7 @@ module.exports = _curry2(function objOf(key, val) {
   return obj;
 });
 
-},{"./internal/_curry2":114}],222:[function(require,module,exports){
+},{"./internal/_curry2":144}],252:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _of = require('./internal/_of');
 
@@ -38488,7 +44726,7 @@ var _of = require('./internal/_of');
  */
 module.exports = _curry1(_of);
 
-},{"./internal/_curry1":113,"./internal/_of":141}],223:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_of":171}],253:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 
@@ -38519,7 +44757,7 @@ module.exports = _curry2(function omit(names, obj) {
   return result;
 });
 
-},{"./internal/_contains":110,"./internal/_curry2":114}],224:[function(require,module,exports){
+},{"./internal/_contains":140,"./internal/_curry2":144}],254:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _curry1 = require('./internal/_curry1');
 
@@ -38556,7 +44794,7 @@ module.exports = _curry1(function once(fn) {
   });
 });
 
-},{"./internal/_arity":102,"./internal/_curry1":113}],225:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_curry1":143}],255:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38584,7 +44822,7 @@ module.exports = _curry2(function or(a, b) {
   return a || b;
 });
 
-},{"./internal/_curry2":114}],226:[function(require,module,exports){
+},{"./internal/_curry2":144}],256:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -38625,7 +44863,7 @@ module.exports = (function() {
   });
 }());
 
-},{"./internal/_curry3":115}],227:[function(require,module,exports){
+},{"./internal/_curry3":145}],257:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38647,7 +44885,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function pair(fst, snd) { return [fst, snd]; });
 
-},{"./internal/_curry2":114}],228:[function(require,module,exports){
+},{"./internal/_curry2":144}],258:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _createPartialApplicator = require('./internal/_createPartialApplicator');
 
@@ -38682,7 +44920,7 @@ var _createPartialApplicator = require('./internal/_createPartialApplicator');
  */
 module.exports = _createPartialApplicator(_concat);
 
-},{"./internal/_concat":109,"./internal/_createPartialApplicator":112}],229:[function(require,module,exports){
+},{"./internal/_concat":139,"./internal/_createPartialApplicator":142}],259:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _createPartialApplicator = require('./internal/_createPartialApplicator');
 var flip = require('./flip');
@@ -38714,7 +44952,7 @@ var flip = require('./flip');
  */
 module.exports = _createPartialApplicator(flip(_concat));
 
-},{"./flip":80,"./internal/_concat":109,"./internal/_createPartialApplicator":112}],230:[function(require,module,exports){
+},{"./flip":110,"./internal/_concat":139,"./internal/_createPartialApplicator":142}],260:[function(require,module,exports){
 var filter = require('./filter');
 var juxt = require('./juxt');
 var reject = require('./reject');
@@ -38745,7 +44983,7 @@ var reject = require('./reject');
  */
 module.exports = juxt([filter, reject]);
 
-},{"./filter":74,"./juxt":182,"./reject":257}],231:[function(require,module,exports){
+},{"./filter":104,"./juxt":212,"./reject":287}],261:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38780,7 +45018,7 @@ module.exports = _curry2(function path(paths, obj) {
   return val;
 });
 
-},{"./internal/_curry2":114}],232:[function(require,module,exports){
+},{"./internal/_curry2":144}],262:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 var path = require('./path');
@@ -38814,7 +45052,7 @@ module.exports = _curry3(function pathEq(_path, val, obj) {
   return equals(path(_path, obj), val);
 });
 
-},{"./equals":72,"./internal/_curry3":115,"./path":231}],233:[function(require,module,exports){
+},{"./equals":102,"./internal/_curry3":145,"./path":261}],263:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var defaultTo = require('./defaultTo');
 var path = require('./path');
@@ -38843,7 +45081,7 @@ module.exports = _curry3(function pathOr(d, p, obj) {
   return defaultTo(d, path(p, obj));
 });
 
-},{"./defaultTo":55,"./internal/_curry3":115,"./path":231}],234:[function(require,module,exports){
+},{"./defaultTo":85,"./internal/_curry3":145,"./path":261}],264:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var path = require('./path');
 
@@ -38871,7 +45109,7 @@ module.exports = _curry3(function pathSatisfies(pred, propPath, obj) {
   return propPath.length > 0 && pred(path(propPath, obj));
 });
 
-},{"./internal/_curry3":115,"./path":231}],235:[function(require,module,exports){
+},{"./internal/_curry3":145,"./path":261}],265:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38905,7 +45143,7 @@ module.exports = _curry2(function pick(names, obj) {
   return result;
 });
 
-},{"./internal/_curry2":114}],236:[function(require,module,exports){
+},{"./internal/_curry2":144}],266:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38939,7 +45177,7 @@ module.exports = _curry2(function pickAll(names, obj) {
   return result;
 });
 
-},{"./internal/_curry2":114}],237:[function(require,module,exports){
+},{"./internal/_curry2":144}],267:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -38973,7 +45211,7 @@ module.exports = _curry2(function pickBy(test, obj) {
   return result;
 });
 
-},{"./internal/_curry2":114}],238:[function(require,module,exports){
+},{"./internal/_curry2":144}],268:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _pipe = require('./internal/_pipe');
 var reduce = require('./reduce');
@@ -39011,7 +45249,7 @@ module.exports = function pipe() {
                 reduce(_pipe, arguments[0], tail(arguments)));
 };
 
-},{"./internal/_arity":102,"./internal/_pipe":142,"./reduce":252,"./tail":277}],239:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_pipe":172,"./reduce":282,"./tail":307}],269:[function(require,module,exports){
 var composeK = require('./composeK');
 var reverse = require('./reverse');
 
@@ -39056,7 +45294,7 @@ module.exports = function pipeK() {
   return composeK.apply(this, reverse(arguments));
 };
 
-},{"./composeK":43,"./reverse":261}],240:[function(require,module,exports){
+},{"./composeK":73,"./reverse":291}],270:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _pipeP = require('./internal/_pipeP');
 var reduce = require('./reduce');
@@ -39089,7 +45327,7 @@ module.exports = function pipeP() {
                 reduce(_pipeP, arguments[0], tail(arguments)));
 };
 
-},{"./internal/_arity":102,"./internal/_pipeP":143,"./reduce":252,"./tail":277}],241:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_pipeP":173,"./reduce":282,"./tail":307}],271:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var map = require('./map');
 var prop = require('./prop');
@@ -39119,7 +45357,7 @@ module.exports = _curry2(function pluck(p, list) {
   return map(prop(p), list);
 });
 
-},{"./internal/_curry2":114,"./map":196,"./prop":245}],242:[function(require,module,exports){
+},{"./internal/_curry2":144,"./map":226,"./prop":275}],272:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 
@@ -39145,7 +45383,7 @@ module.exports = _curry2(function prepend(el, list) {
   return _concat([el], list);
 });
 
-},{"./internal/_concat":109,"./internal/_curry2":114}],243:[function(require,module,exports){
+},{"./internal/_concat":139,"./internal/_curry2":144}],273:[function(require,module,exports){
 var multiply = require('./multiply');
 var reduce = require('./reduce');
 
@@ -39167,7 +45405,7 @@ var reduce = require('./reduce');
  */
 module.exports = reduce(multiply, 1);
 
-},{"./multiply":214,"./reduce":252}],244:[function(require,module,exports){
+},{"./multiply":244,"./reduce":282}],274:[function(require,module,exports){
 var _map = require('./internal/_map');
 var identity = require('./identity');
 var pickAll = require('./pickAll');
@@ -39195,7 +45433,7 @@ var useWith = require('./useWith');
  */
 module.exports = useWith(_map, [pickAll, identity]); // passing `identity` gives correct arity
 
-},{"./identity":92,"./internal/_map":139,"./pickAll":236,"./useWith":309}],245:[function(require,module,exports){
+},{"./identity":122,"./internal/_map":169,"./pickAll":266,"./useWith":339}],275:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -39219,7 +45457,7 @@ var _curry2 = require('./internal/_curry2');
  */
 module.exports = _curry2(function prop(p, obj) { return obj[p]; });
 
-},{"./internal/_curry2":114}],246:[function(require,module,exports){
+},{"./internal/_curry2":144}],276:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var equals = require('./equals');
 
@@ -39252,7 +45490,7 @@ module.exports = _curry3(function propEq(name, val, obj) {
   return equals(val, obj[name]);
 });
 
-},{"./equals":72,"./internal/_curry3":115}],247:[function(require,module,exports){
+},{"./equals":102,"./internal/_curry3":145}],277:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var is = require('./is');
 
@@ -39281,7 +45519,7 @@ module.exports = _curry3(function propIs(type, name, obj) {
   return is(type, obj[name]);
 });
 
-},{"./internal/_curry3":115,"./is":177}],248:[function(require,module,exports){
+},{"./internal/_curry3":145,"./is":207}],278:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _has = require('./internal/_has');
 
@@ -39316,7 +45554,7 @@ module.exports = _curry3(function propOr(val, p, obj) {
   return (obj != null && _has(p, obj)) ? obj[p] : val;
 });
 
-},{"./internal/_curry3":115,"./internal/_has":125}],249:[function(require,module,exports){
+},{"./internal/_curry3":145,"./internal/_has":155}],279:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -39342,7 +45580,7 @@ module.exports = _curry3(function propSatisfies(pred, name, obj) {
   return pred(obj[name]);
 });
 
-},{"./internal/_curry3":115}],250:[function(require,module,exports){
+},{"./internal/_curry3":145}],280:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -39379,7 +45617,7 @@ module.exports = _curry2(function props(ps, obj) {
   return out;
 });
 
-},{"./internal/_curry2":114}],251:[function(require,module,exports){
+},{"./internal/_curry2":144}],281:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _isNumber = require('./internal/_isNumber');
 
@@ -39413,7 +45651,7 @@ module.exports = _curry2(function range(from, to) {
   return result;
 });
 
-},{"./internal/_curry2":114,"./internal/_isNumber":132}],252:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_isNumber":162}],282:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var _reduce = require('./internal/_reduce');
 
@@ -39463,7 +45701,7 @@ var _reduce = require('./internal/_reduce');
  */
 module.exports = _curry3(_reduce);
 
-},{"./internal/_curry3":115,"./internal/_reduce":145}],253:[function(require,module,exports){
+},{"./internal/_curry3":145,"./internal/_reduce":175}],283:[function(require,module,exports){
 var _curryN = require('./internal/_curryN');
 var _dispatchable = require('./internal/_dispatchable');
 var _has = require('./internal/_has');
@@ -39524,7 +45762,7 @@ module.exports = _curryN(4, [], _dispatchable([], _xreduceBy,
     }, {}, list);
   }));
 
-},{"./internal/_curryN":116,"./internal/_dispatchable":117,"./internal/_has":125,"./internal/_reduce":145,"./internal/_xreduceBy":166}],254:[function(require,module,exports){
+},{"./internal/_curryN":146,"./internal/_dispatchable":147,"./internal/_has":155,"./internal/_reduce":175,"./internal/_xreduceBy":196}],284:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -39579,7 +45817,7 @@ module.exports = _curry3(function reduceRight(fn, acc, list) {
   return acc;
 });
 
-},{"./internal/_curry3":115}],255:[function(require,module,exports){
+},{"./internal/_curry3":145}],285:[function(require,module,exports){
 var _curryN = require('./internal/_curryN');
 var _reduce = require('./internal/_reduce');
 var _reduced = require('./internal/_reduced');
@@ -39620,7 +45858,7 @@ module.exports = _curryN(4, [], function _reduceWhile(pred, fn, a, list) {
   }, a, list);
 });
 
-},{"./internal/_curryN":116,"./internal/_reduce":145,"./internal/_reduced":146}],256:[function(require,module,exports){
+},{"./internal/_curryN":146,"./internal/_reduce":175,"./internal/_reduced":176}],286:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _reduced = require('./internal/_reduced');
 
@@ -39650,7 +45888,7 @@ var _reduced = require('./internal/_reduced');
 
 module.exports = _curry1(_reduced);
 
-},{"./internal/_curry1":113,"./internal/_reduced":146}],257:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_reduced":176}],287:[function(require,module,exports){
 var _complement = require('./internal/_complement');
 var _curry2 = require('./internal/_curry2');
 var filter = require('./filter');
@@ -39682,7 +45920,7 @@ module.exports = _curry2(function reject(pred, filterable) {
   return filter(_complement(pred), filterable);
 });
 
-},{"./filter":74,"./internal/_complement":108,"./internal/_curry2":114}],258:[function(require,module,exports){
+},{"./filter":104,"./internal/_complement":138,"./internal/_curry2":144}],288:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -39711,7 +45949,7 @@ module.exports = _curry3(function remove(start, count, list) {
   return result;
 });
 
-},{"./internal/_curry3":115}],259:[function(require,module,exports){
+},{"./internal/_curry3":145}],289:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var always = require('./always');
 var times = require('./times');
@@ -39743,7 +45981,7 @@ module.exports = _curry2(function repeat(value, n) {
   return times(always(value), n);
 });
 
-},{"./always":21,"./internal/_curry2":114,"./times":284}],260:[function(require,module,exports){
+},{"./always":51,"./internal/_curry2":144,"./times":314}],290:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -39771,7 +46009,7 @@ module.exports = _curry3(function replace(regex, replacement, str) {
   return str.replace(regex, replacement);
 });
 
-},{"./internal/_curry3":115}],261:[function(require,module,exports){
+},{"./internal/_curry3":145}],291:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _isString = require('./internal/_isString');
 
@@ -39805,7 +46043,7 @@ module.exports = _curry1(function reverse(list) {
                            Array.prototype.slice.call(list, 0).reverse();
 });
 
-},{"./internal/_curry1":113,"./internal/_isString":136}],262:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_isString":166}],292:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -39841,7 +46079,7 @@ module.exports = _curry3(function scan(fn, acc, list) {
   return result;
 });
 
-},{"./internal/_curry3":115}],263:[function(require,module,exports){
+},{"./internal/_curry3":145}],293:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var ap = require('./ap');
 var map = require('./map');
@@ -39881,7 +46119,7 @@ module.exports = _curry2(function sequence(of, traversable) {
                 traversable);
 });
 
-},{"./ap":25,"./internal/_curry2":114,"./map":196,"./prepend":242,"./reduceRight":254}],264:[function(require,module,exports){
+},{"./ap":55,"./internal/_curry2":144,"./map":226,"./prepend":272,"./reduceRight":284}],294:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var always = require('./always');
 var over = require('./over');
@@ -39913,7 +46151,7 @@ module.exports = _curry3(function set(lens, v, x) {
   return over(lens, always(v), x);
 });
 
-},{"./always":21,"./internal/_curry3":115,"./over":226}],265:[function(require,module,exports){
+},{"./always":51,"./internal/_curry3":145,"./over":256}],295:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry3 = require('./internal/_curry3');
 
@@ -39946,7 +46184,7 @@ module.exports = _curry3(_checkForMethod('slice', function slice(fromIndex, toIn
   return Array.prototype.slice.call(list, fromIndex, toIndex);
 }));
 
-},{"./internal/_checkForMethod":105,"./internal/_curry3":115}],266:[function(require,module,exports){
+},{"./internal/_checkForMethod":135,"./internal/_curry3":145}],296:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -39974,7 +46212,7 @@ module.exports = _curry2(function sort(comparator, list) {
   return Array.prototype.slice.call(list, 0).sort(comparator);
 });
 
-},{"./internal/_curry2":114}],267:[function(require,module,exports){
+},{"./internal/_curry2":144}],297:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -40018,7 +46256,7 @@ module.exports = _curry2(function sortBy(fn, list) {
   });
 });
 
-},{"./internal/_curry2":114}],268:[function(require,module,exports){
+},{"./internal/_curry2":144}],298:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -40066,7 +46304,7 @@ module.exports = _curry2(function sortWith(fns, list) {
   });
 });
 
-},{"./internal/_curry2":114}],269:[function(require,module,exports){
+},{"./internal/_curry2":144}],299:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -40092,7 +46330,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(1, 'split');
 
-},{"./invoker":176}],270:[function(require,module,exports){
+},{"./invoker":206}],300:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var length = require('./length');
 var slice = require('./slice');
@@ -40120,7 +46358,7 @@ module.exports = _curry2(function splitAt(index, array) {
   return [slice(0, index, array), slice(index, length(array), array)];
 });
 
-},{"./internal/_curry2":114,"./length":187,"./slice":265}],271:[function(require,module,exports){
+},{"./internal/_curry2":144,"./length":217,"./slice":295}],301:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var slice = require('./slice');
 
@@ -40154,7 +46392,7 @@ module.exports = _curry2(function splitEvery(n, list) {
   return result;
 });
 
-},{"./internal/_curry2":114,"./slice":265}],272:[function(require,module,exports){
+},{"./internal/_curry2":144,"./slice":295}],302:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -40190,7 +46428,7 @@ module.exports = _curry2(function splitWhen(pred, list) {
   return [prefix, Array.prototype.slice.call(list, idx)];
 });
 
-},{"./internal/_curry2":114}],273:[function(require,module,exports){
+},{"./internal/_curry2":144}],303:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -40221,7 +46459,7 @@ module.exports = _curry2(function subtract(a, b) {
   return Number(a) - Number(b);
 });
 
-},{"./internal/_curry2":114}],274:[function(require,module,exports){
+},{"./internal/_curry2":144}],304:[function(require,module,exports){
 var add = require('./add');
 var reduce = require('./reduce');
 
@@ -40243,7 +46481,7 @@ var reduce = require('./reduce');
  */
 module.exports = reduce(add, 0);
 
-},{"./add":16,"./reduce":252}],275:[function(require,module,exports){
+},{"./add":46,"./reduce":282}],305:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var concat = require('./concat');
 var difference = require('./difference');
@@ -40271,7 +46509,7 @@ module.exports = _curry2(function symmetricDifference(list1, list2) {
   return concat(difference(list1, list2), difference(list2, list1));
 });
 
-},{"./concat":45,"./difference":57,"./internal/_curry2":114}],276:[function(require,module,exports){
+},{"./concat":75,"./difference":87,"./internal/_curry2":144}],306:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var concat = require('./concat');
 var differenceWith = require('./differenceWith');
@@ -40303,7 +46541,7 @@ module.exports = _curry3(function symmetricDifferenceWith(pred, list1, list2) {
   return concat(differenceWith(pred, list1, list2), differenceWith(pred, list2, list1));
 });
 
-},{"./concat":45,"./differenceWith":58,"./internal/_curry3":115}],277:[function(require,module,exports){
+},{"./concat":75,"./differenceWith":88,"./internal/_curry3":145}],307:[function(require,module,exports){
 var _checkForMethod = require('./internal/_checkForMethod');
 var _curry1 = require('./internal/_curry1');
 var slice = require('./slice');
@@ -40338,7 +46576,7 @@ var slice = require('./slice');
  */
 module.exports = _curry1(_checkForMethod('tail', slice(1, Infinity)));
 
-},{"./internal/_checkForMethod":105,"./internal/_curry1":113,"./slice":265}],278:[function(require,module,exports){
+},{"./internal/_checkForMethod":135,"./internal/_curry1":143,"./slice":295}],308:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xtake = require('./internal/_xtake');
@@ -40392,7 +46630,7 @@ module.exports = _curry2(_dispatchable(['take'], _xtake, function take(n, xs) {
   return slice(0, n < 0 ? Infinity : n, xs);
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xtake":167,"./slice":265}],279:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xtake":197,"./slice":295}],309:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var drop = require('./drop');
 
@@ -40423,7 +46661,7 @@ module.exports = _curry2(function takeLast(n, xs) {
   return drop(n >= 0 ? xs.length - n : 0, xs);
 });
 
-},{"./drop":62,"./internal/_curry2":114}],280:[function(require,module,exports){
+},{"./drop":92,"./internal/_curry2":144}],310:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -40457,7 +46695,7 @@ module.exports = _curry2(function takeLastWhile(fn, list) {
   return Array.prototype.slice.call(list, idx + 1);
 });
 
-},{"./internal/_curry2":114}],281:[function(require,module,exports){
+},{"./internal/_curry2":144}],311:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _dispatchable = require('./internal/_dispatchable');
 var _xtakeWhile = require('./internal/_xtakeWhile');
@@ -40498,7 +46736,7 @@ module.exports = _curry2(_dispatchable(['takeWhile'], _xtakeWhile, function take
   return Array.prototype.slice.call(list, 0, idx);
 }));
 
-},{"./internal/_curry2":114,"./internal/_dispatchable":117,"./internal/_xtakeWhile":168}],282:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_dispatchable":147,"./internal/_xtakeWhile":198}],312:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -40525,7 +46763,7 @@ module.exports = _curry2(function tap(fn, x) {
   return x;
 });
 
-},{"./internal/_curry2":114}],283:[function(require,module,exports){
+},{"./internal/_curry2":144}],313:[function(require,module,exports){
 var _cloneRegExp = require('./internal/_cloneRegExp');
 var _curry2 = require('./internal/_curry2');
 var _isRegExp = require('./internal/_isRegExp');
@@ -40556,7 +46794,7 @@ module.exports = _curry2(function test(pattern, str) {
   return _cloneRegExp(pattern).test(str);
 });
 
-},{"./internal/_cloneRegExp":107,"./internal/_curry2":114,"./internal/_isRegExp":135,"./toString":288}],284:[function(require,module,exports){
+},{"./internal/_cloneRegExp":137,"./internal/_curry2":144,"./internal/_isRegExp":165,"./toString":318}],314:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -40598,7 +46836,7 @@ module.exports = _curry2(function times(fn, n) {
   return list;
 });
 
-},{"./internal/_curry2":114}],285:[function(require,module,exports){
+},{"./internal/_curry2":144}],315:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -40619,7 +46857,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(0, 'toLowerCase');
 
-},{"./invoker":176}],286:[function(require,module,exports){
+},{"./invoker":206}],316:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _has = require('./internal/_has');
 
@@ -40652,7 +46890,7 @@ module.exports = _curry1(function toPairs(obj) {
   return pairs;
 });
 
-},{"./internal/_curry1":113,"./internal/_has":125}],287:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_has":155}],317:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -40685,7 +46923,7 @@ module.exports = _curry1(function toPairsIn(obj) {
   return pairs;
 });
 
-},{"./internal/_curry1":113}],288:[function(require,module,exports){
+},{"./internal/_curry1":143}],318:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var _toString = require('./internal/_toString');
 
@@ -40728,7 +46966,7 @@ var _toString = require('./internal/_toString');
  */
 module.exports = _curry1(function toString(val) { return _toString(val, []); });
 
-},{"./internal/_curry1":113,"./internal/_toString":149}],289:[function(require,module,exports){
+},{"./internal/_curry1":143,"./internal/_toString":179}],319:[function(require,module,exports){
 var invoker = require('./invoker');
 
 
@@ -40749,7 +46987,7 @@ var invoker = require('./invoker');
  */
 module.exports = invoker(0, 'toUpperCase');
 
-},{"./invoker":176}],290:[function(require,module,exports){
+},{"./invoker":206}],320:[function(require,module,exports){
 var _reduce = require('./internal/_reduce');
 var _xwrap = require('./internal/_xwrap');
 var curryN = require('./curryN');
@@ -40803,7 +47041,7 @@ module.exports = curryN(4, function transduce(xf, fn, acc, list) {
   return _reduce(xf(typeof fn === 'function' ? _xwrap(fn) : fn), acc, list);
 });
 
-},{"./curryN":53,"./internal/_reduce":145,"./internal/_xwrap":169}],291:[function(require,module,exports){
+},{"./curryN":83,"./internal/_reduce":175,"./internal/_xwrap":199}],321:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -40850,7 +47088,7 @@ module.exports = _curry1(function transpose(outerlist) {
   return result;
 });
 
-},{"./internal/_curry1":113}],292:[function(require,module,exports){
+},{"./internal/_curry1":143}],322:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var map = require('./map');
 var sequence = require('./sequence');
@@ -40886,7 +47124,7 @@ module.exports = _curry3(function traverse(of, f, traversable) {
   return sequence(of, map(f, traversable));
 });
 
-},{"./internal/_curry3":115,"./map":196,"./sequence":263}],293:[function(require,module,exports){
+},{"./internal/_curry3":145,"./map":226,"./sequence":293}],323:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -40924,7 +47162,7 @@ module.exports = (function() {
   }
 }());
 
-},{"./internal/_curry1":113}],294:[function(require,module,exports){
+},{"./internal/_curry1":143}],324:[function(require,module,exports){
 var _arity = require('./internal/_arity');
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
@@ -40961,7 +47199,7 @@ module.exports = _curry2(function _tryCatch(tryer, catcher) {
   });
 });
 
-},{"./internal/_arity":102,"./internal/_concat":109,"./internal/_curry2":114}],295:[function(require,module,exports){
+},{"./internal/_arity":132,"./internal/_concat":139,"./internal/_curry2":144}],325:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -40994,7 +47232,7 @@ module.exports = _curry1(function type(val) {
          Object.prototype.toString.call(val).slice(8, -1);
 });
 
-},{"./internal/_curry1":113}],296:[function(require,module,exports){
+},{"./internal/_curry1":143}],326:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -41028,7 +47266,7 @@ module.exports = _curry1(function unapply(fn) {
   };
 });
 
-},{"./internal/_curry1":113}],297:[function(require,module,exports){
+},{"./internal/_curry1":143}],327:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var nAry = require('./nAry');
 
@@ -41064,7 +47302,7 @@ module.exports = _curry1(function unary(fn) {
   return nAry(1, fn);
 });
 
-},{"./internal/_curry1":113,"./nAry":215}],298:[function(require,module,exports){
+},{"./internal/_curry1":143,"./nAry":245}],328:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var curryN = require('./curryN');
 
@@ -41104,7 +47342,7 @@ module.exports = _curry2(function uncurryN(depth, fn) {
   });
 });
 
-},{"./curryN":53,"./internal/_curry2":114}],299:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry2":144}],329:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -41143,7 +47381,7 @@ module.exports = _curry2(function unfold(fn, seed) {
   return result;
 });
 
-},{"./internal/_curry2":114}],300:[function(require,module,exports){
+},{"./internal/_curry2":144}],330:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry2 = require('./internal/_curry2');
 var compose = require('./compose');
@@ -41169,7 +47407,7 @@ var uniq = require('./uniq');
  */
 module.exports = _curry2(compose(uniq, _concat));
 
-},{"./compose":42,"./internal/_concat":109,"./internal/_curry2":114,"./uniq":302}],301:[function(require,module,exports){
+},{"./compose":72,"./internal/_concat":139,"./internal/_curry2":144,"./uniq":332}],331:[function(require,module,exports){
 var _concat = require('./internal/_concat');
 var _curry3 = require('./internal/_curry3');
 var uniqWith = require('./uniqWith');
@@ -41201,7 +47439,7 @@ module.exports = _curry3(function unionWith(pred, list1, list2) {
   return uniqWith(pred, _concat(list1, list2));
 });
 
-},{"./internal/_concat":109,"./internal/_curry3":115,"./uniqWith":304}],302:[function(require,module,exports){
+},{"./internal/_concat":139,"./internal/_curry3":145,"./uniqWith":334}],332:[function(require,module,exports){
 var identity = require('./identity');
 var uniqBy = require('./uniqBy');
 
@@ -41225,7 +47463,7 @@ var uniqBy = require('./uniqBy');
  */
 module.exports = uniqBy(identity);
 
-},{"./identity":92,"./uniqBy":303}],303:[function(require,module,exports){
+},{"./identity":122,"./uniqBy":333}],333:[function(require,module,exports){
 var _Set = require('./internal/_Set');
 var _curry2 = require('./internal/_curry2');
 
@@ -41265,7 +47503,7 @@ module.exports = _curry2(function uniqBy(fn, list) {
   return result;
 });
 
-},{"./internal/_Set":100,"./internal/_curry2":114}],304:[function(require,module,exports){
+},{"./internal/_Set":130,"./internal/_curry2":144}],334:[function(require,module,exports){
 var _containsWith = require('./internal/_containsWith');
 var _curry2 = require('./internal/_curry2');
 
@@ -41307,7 +47545,7 @@ module.exports = _curry2(function uniqWith(pred, list) {
   return result;
 });
 
-},{"./internal/_containsWith":111,"./internal/_curry2":114}],305:[function(require,module,exports){
+},{"./internal/_containsWith":141,"./internal/_curry2":144}],335:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -41340,7 +47578,7 @@ module.exports = _curry3(function unless(pred, whenFalseFn, x) {
   return pred(x) ? x : whenFalseFn(x);
 });
 
-},{"./internal/_curry3":115}],306:[function(require,module,exports){
+},{"./internal/_curry3":145}],336:[function(require,module,exports){
 var _identity = require('./internal/_identity');
 var chain = require('./chain');
 
@@ -41364,7 +47602,7 @@ var chain = require('./chain');
  */
 module.exports = chain(_identity);
 
-},{"./chain":37,"./internal/_identity":126}],307:[function(require,module,exports){
+},{"./chain":67,"./internal/_identity":156}],337:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -41395,7 +47633,7 @@ module.exports = _curry3(function until(pred, fn, init) {
   return val;
 });
 
-},{"./internal/_curry3":115}],308:[function(require,module,exports){
+},{"./internal/_curry3":145}],338:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 var adjust = require('./adjust');
 var always = require('./always');
@@ -41427,7 +47665,7 @@ module.exports = _curry3(function update(idx, x, list) {
   return adjust(always(x), idx, list);
 });
 
-},{"./adjust":18,"./always":21,"./internal/_curry3":115}],309:[function(require,module,exports){
+},{"./adjust":48,"./always":51,"./internal/_curry3":145}],339:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var curryN = require('./curryN');
 
@@ -41473,7 +47711,7 @@ module.exports = _curry2(function useWith(fn, transformers) {
   });
 });
 
-},{"./curryN":53,"./internal/_curry2":114}],310:[function(require,module,exports){
+},{"./curryN":83,"./internal/_curry2":144}],340:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 var keys = require('./keys');
 
@@ -41506,7 +47744,7 @@ module.exports = _curry1(function values(obj) {
   return vals;
 });
 
-},{"./internal/_curry1":113,"./keys":183}],311:[function(require,module,exports){
+},{"./internal/_curry1":143,"./keys":213}],341:[function(require,module,exports){
 var _curry1 = require('./internal/_curry1');
 
 
@@ -41539,7 +47777,7 @@ module.exports = _curry1(function valuesIn(obj) {
   return vs;
 });
 
-},{"./internal/_curry1":113}],312:[function(require,module,exports){
+},{"./internal/_curry1":143}],342:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -41577,7 +47815,7 @@ module.exports = (function() {
   });
 }());
 
-},{"./internal/_curry2":114}],313:[function(require,module,exports){
+},{"./internal/_curry2":144}],343:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -41613,7 +47851,7 @@ module.exports = _curry3(function when(pred, whenTrueFn, x) {
   return pred(x) ? whenTrueFn(x) : x;
 });
 
-},{"./internal/_curry3":115}],314:[function(require,module,exports){
+},{"./internal/_curry3":145}],344:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var _has = require('./internal/_has');
 
@@ -41661,7 +47899,7 @@ module.exports = _curry2(function where(spec, testObj) {
   return true;
 });
 
-},{"./internal/_curry2":114,"./internal/_has":125}],315:[function(require,module,exports){
+},{"./internal/_curry2":144,"./internal/_has":155}],345:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 var equals = require('./equals');
 var map = require('./map');
@@ -41699,7 +47937,7 @@ module.exports = _curry2(function whereEq(spec, testObj) {
   return where(map(equals, spec), testObj);
 });
 
-},{"./equals":72,"./internal/_curry2":114,"./map":196,"./where":314}],316:[function(require,module,exports){
+},{"./equals":102,"./internal/_curry2":144,"./map":226,"./where":344}],346:[function(require,module,exports){
 var _contains = require('./internal/_contains');
 var _curry2 = require('./internal/_curry2');
 var flip = require('./flip');
@@ -41729,7 +47967,7 @@ module.exports = _curry2(function(xs, list) {
   return reject(flip(_contains)(xs), list);
 });
 
-},{"./flip":80,"./internal/_contains":110,"./internal/_curry2":114,"./reject":257}],317:[function(require,module,exports){
+},{"./flip":110,"./internal/_contains":140,"./internal/_curry2":144,"./reject":287}],347:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -41768,7 +48006,7 @@ module.exports = _curry2(function xprod(a, b) { // = xprodWith(prepend); (takes 
   return result;
 });
 
-},{"./internal/_curry2":114}],318:[function(require,module,exports){
+},{"./internal/_curry2":144}],348:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -41802,7 +48040,7 @@ module.exports = _curry2(function zip(a, b) {
   return rv;
 });
 
-},{"./internal/_curry2":114}],319:[function(require,module,exports){
+},{"./internal/_curry2":144}],349:[function(require,module,exports){
 var _curry2 = require('./internal/_curry2');
 
 
@@ -41834,7 +48072,7 @@ module.exports = _curry2(function zipObj(keys, values) {
   return out;
 });
 
-},{"./internal/_curry2":114}],320:[function(require,module,exports){
+},{"./internal/_curry2":144}],350:[function(require,module,exports){
 var _curry3 = require('./internal/_curry3');
 
 
@@ -41873,7 +48111,2950 @@ module.exports = _curry3(function zipWith(fn, a, b) {
   return rv;
 });
 
-},{"./internal/_curry3":115}],321:[function(require,module,exports){
+},{"./internal/_curry3":145}],351:[function(require,module,exports){
+'use strict';
+
+const u = require('./src/index.js');
+
+const R = require( 'ramda');
+
+const Ru = R.merge( R, u );
+
+
+module.exports = Ru;
+
+},{"./src/index.js":357,"ramda":42}],352:[function(require,module,exports){
+(function (global){
+(function(global, f){
+
+  'use strict';
+
+  /*istanbul ignore next*/
+  if(module && typeof module.exports !== 'undefined'){
+    module.exports = f(require('sanctuary-type-classes'), require('sanctuary-type-identifiers'));
+  }else{
+    global.concurrify = f(global.sanctuaryTypeClasses, global.sanctuaryTypeIdentifiers);
+  }
+
+}(/*istanbul ignore next*/(global || window || this), function(Z, type){
+
+  'use strict';
+
+  var $alt = 'fantasy-land/alt';
+  var $ap = 'fantasy-land/ap';
+  var $map = 'fantasy-land/map';
+  var $of = 'fantasy-land/of';
+  var $zero = 'fantasy-land/zero';
+  var $$type = '@@type';
+
+  var ordinal = ['first', 'second', 'third', 'fourth', 'fifth'];
+
+  function isFunction(f){
+    return typeof f === 'function';
+  }
+
+  function isBinary(f){
+    return f.length >= 2;
+  }
+
+  function isApplicativeRepr(Repr){
+    try{
+      return Z.Applicative.test(Z.of(Repr));
+    }catch(_){
+      return false;
+    }
+  }
+
+  function invalidArgument(it, at, expected, actual){
+    throw new TypeError(
+      it
+      + ' expects its '
+      + ordinal[at]
+      + ' argument to '
+      + expected
+      + '\n  Actual: '
+      + Z.toString(actual)
+    );
+  }
+
+  function invalidContext(it, actual, an){
+    throw new TypeError(
+      it + ' was invoked outside the context of a ' + an + '. \n  Called on: ' + Z.toString(actual)
+    );
+  }
+
+  //       getTypeIdentifier :: TypeRepresentative -> TypeIdentifier
+  function getTypeIdentifier(Repr){
+    return Repr[$$type] || Repr.name || 'Anonymous';
+  }
+
+  //       generateTypeIdentifier :: TypeIdentifier -> TypeIdentifier
+  function generateTypeIdentifier(identifier){
+    var o = type.parse(identifier);
+    return (o.namespace || 'concurrify') + '/Concurrent' + o.name + '@' + o.version;
+  }
+
+  //concurrify :: Applicative m
+  //           => (TypeRep m, m a, (m a, m a) -> m a, (m a, m (a -> b)) -> m b)
+  //           -> Concurrently m
+  return function concurrify(Repr, zero, alt, ap){
+
+    var INNERTYPE = getTypeIdentifier(Repr);
+    var OUTERTYPE = generateTypeIdentifier(INNERTYPE);
+
+    var INNERNAME = type.parse(INNERTYPE).name;
+    var OUTERNAME = type.parse(OUTERTYPE).name;
+
+    function Concurrently(sequential){
+      this.sequential = sequential;
+    }
+
+    function isInner(x){
+      return x instanceof Repr
+      || (Boolean(x) && x.constructor === Repr)
+      || type(x) === Repr[$$type];
+    }
+
+    function isOuter(x){
+      return x instanceof Concurrently
+      || (Boolean(x) && x.constructor === Concurrently)
+      || type(x) === OUTERTYPE;
+    }
+
+    function construct(x){
+      if(!isInner(x)) invalidArgument(OUTERNAME, 0, 'be of type "' + INNERNAME + '"', x);
+      return new Concurrently(x);
+    }
+
+    if(!isApplicativeRepr(Repr)) invalidArgument('concurrify', 0, 'represent an Applicative', Repr);
+    if(!isInner(zero)) invalidArgument('concurrify', 1, 'be of type "' + INNERNAME + '"', zero);
+    if(!isFunction(alt)) invalidArgument('concurrify', 2, 'be a function', alt);
+    if(!isBinary(alt)) invalidArgument('concurrify', 2, 'be binary', alt);
+    if(!isFunction(ap)) invalidArgument('concurrify', 3, 'be a function', ap);
+    if(!isBinary(ap)) invalidArgument('concurrify', 3, 'be binary', ap);
+
+    var proto = Concurrently.prototype = construct.prototype = {constructor: construct};
+
+    construct[$$type] = OUTERTYPE;
+
+    var mzero = new Concurrently(zero);
+    construct[$zero] = function Concurrently$zero(){
+      return mzero;
+    };
+
+    construct[$of] = function Concurrently$of(value){
+      return new Concurrently(Z.of(Repr, value));
+    };
+
+    proto[$map] = function Concurrently$map(mapper){
+      if(!isOuter(this)) invalidContext(OUTERNAME + '#map', this, OUTERNAME);
+      if(!isFunction(mapper)) invalidArgument(OUTERNAME + '#map', 0, 'be a function', mapper);
+      return new Concurrently(Z.map(mapper, this.sequential));
+    };
+
+    proto[$ap] = function Concurrently$ap(m){
+      if(!isOuter(this)) invalidContext(OUTERNAME + '#ap', this, OUTERNAME);
+      if(!isOuter(m)) invalidArgument(OUTERNAME + '#ap', 0, 'be a ' + OUTERNAME, m);
+      return new Concurrently(ap(this.sequential, m.sequential));
+    };
+
+    proto[$alt] = function Concurrently$alt(m){
+      if(!isOuter(this)) invalidContext(OUTERNAME + '#alt', this, OUTERNAME);
+      if(!isOuter(m)) invalidArgument(OUTERNAME + '#alt', 0, 'be a ' + OUTERNAME, m);
+      return new Concurrently(alt(this.sequential, m.sequential));
+    };
+
+    proto.toString = function Concurrently$toString(){
+      if(!isOuter(this)) invalidContext(OUTERNAME + '#toString', this, OUTERNAME);
+      return OUTERNAME + '(' + Z.toString(this.sequential) + ')';
+    };
+
+    return construct;
+
+  };
+
+}));
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"sanctuary-type-classes":354,"sanctuary-type-identifiers":356}],353:[function(require,module,exports){
+!function(global,factory){"object"==typeof exports&&"undefined"!=typeof module?module.exports=factory(require("denque"),require("sanctuary-type-classes"),require("inspect-f"),require("sanctuary-type-identifiers"),require("concurrify")):"function"==typeof define&&define.amd?define(["denque","sanctuary-type-classes","inspect-f","sanctuary-type-identifiers","concurrify"],factory):global.Fluture=factory(global.Denque,global.sanctuaryTypeClasses,global.inspectf,global.sanctuaryTypeIdentifiers,global.concurrify)}(this,function(Denque,Z,inspectf,type,concurrify){"use strict";function Future(computation){return isFunction(computation)||invalidArgument("Future",0,"be a Function",computation),new Computation(computation)}function isFuture(x){return x instanceof Future||type(x)===$$type}function check$fork(f,c){void 0===f||isFunction(f)&&0===f.length||typeError("Future expected its computation to return a nullary function or void\n  Actual: "+show(f)+"\n  From calling: "+showf(c))}function Computation(computation){this._computation=computation}function Rejected(value){this._value=value}function Resolved(value){this._value=value}function Never(){}function Eager(future){var this$1=this;this.rej=noop,this.res=noop,this.rejected=!1,this.resolved=!1,this.value=null,this.cancel=future._fork(function(x){this$1.value=x,this$1.rejected=!0,this$1.cancel=noop,this$1.rej(x)},function(x){this$1.value=x,this$1.resolved=!0,this$1.cancel=noop,this$1.res(x)})}function Sequence(spawn,actions){void 0===actions&&(actions=[]),this._spawn=spawn,this._actions=actions}function ap$mval(mval,mfunc){return Z.Apply.test(mfunc)||invalidArgument("Future.ap",1,"be an Apply",mfunc),Z.ap(mval,mfunc)}function ap(mval,mfunc){return Z.Apply.test(mval)||invalidArgument("Future.ap",0,"be an Apply",mval),1===arguments.length?partial1(ap$mval,mval):ap$mval(mval,mfunc)}function map$mapper(mapper,m){return Z.Functor.test(m)||invalidArgument("Future.map",1,"be a Functor",m),Z.map(mapper,m)}function map(mapper,m){return isFunction(mapper)||invalidArgument("Future.map",0,"be a Function",mapper),1===arguments.length?partial1(map$mapper,mapper):map$mapper(mapper,m)}function bimap$lmapper$rmapper(lmapper,rmapper,m){return Z.Bifunctor.test(m)||invalidArgument("Future.bimap",2,"be a Bifunctor",m),Z.bimap(lmapper,rmapper,m)}function bimap$lmapper(lmapper,rmapper,m){return isFunction(rmapper)||invalidArgument("Future.bimap",1,"be a Function",rmapper),2===arguments.length?partial2(bimap$lmapper$rmapper,lmapper,rmapper):bimap$lmapper$rmapper(lmapper,rmapper,m)}function bimap(lmapper,rmapper,m){return isFunction(lmapper)||invalidArgument("Future.bimap",0,"be a Function",lmapper),1===arguments.length?partial1(bimap$lmapper,lmapper):2===arguments.length?bimap$lmapper(lmapper,rmapper):bimap$lmapper(lmapper,rmapper,m)}function chain$chainer(chainer,m){return Z.Chain.test(m)||invalidArgument("Future.chain",1,"be a Chain",m),Z.chain(chainer,m)}function chain(chainer,m){return isFunction(chainer)||invalidArgument("Future.chain",0,"be a Function",chainer),1===arguments.length?partial1(chain$chainer,chainer):chain$chainer(chainer,m)}function mapRej$mapper(mapper,m){return isFuture(m)||invalidFuture("Future.mapRej",1,m),m.mapRej(mapper)}function mapRej(mapper,m){return isFunction(mapper)||invalidArgument("Future.mapRej",0,"be a Function",mapper),1===arguments.length?partial1(mapRej$mapper,mapper):mapRej$mapper(mapper,m)}function chainRej$chainer(chainer,m){return isFuture(m)||invalidFuture("Future.chainRej",1,m),m.chainRej(chainer)}function chainRej(chainer,m){return isFunction(chainer)||invalidArgument("Future.chainRej",0,"be a Function",chainer),1===arguments.length?partial1(chainRej$chainer,chainer):chainRej$chainer(chainer,m)}function lastly$right(right,left){return isFuture(left)||invalidFuture("Future.finally",1,left),left.finally(right)}function lastly(right,left){return isFuture(right)||invalidFuture("Future.finally",0,right),1===arguments.length?partial1(lastly$right,right):lastly$right(right,left)}function and$left(left,right){return isFuture(right)||invalidFuture("Future.and",1,right),left.and(right)}function and(left,right){return isFuture(left)||invalidFuture("Future.and",0,left),1===arguments.length?partial1(and$left,left):and$left(left,right)}function both$left(left,right){return isFuture(right)||invalidFuture("Future.both",1,right),left.both(right)}function both(left,right){return isFuture(left)||invalidFuture("Future.both",0,left),1===arguments.length?partial1(both$left,left):both$left(left,right)}function or$left(left,right){return isFuture(right)||invalidFuture("Future.or",1,right),left.or(right)}function or(left,right){return isFuture(left)||invalidFuture("Future.or",0,left),1===arguments.length?partial1(or$left,left):or$left(left,right)}function race$right(right,left){return isFuture(left)||invalidFuture("Future.race",1,left),left.race(right)}function race(right,left){return isFuture(right)||invalidFuture("Future.race",0,right),1===arguments.length?partial1(race$right,right):race$right(right,left)}function swap(m){return isFuture(m)||invalidFuture("Future.swap",0,m),m.swap()}function fold$f$g(f,g,m){return isFuture(m)||invalidFuture("Future.fold",2,m),m.fold(f,g)}function fold$f(f,g,m){return isFunction(g)||invalidArgument("Future.fold",1,"be a function",g),2===arguments.length?partial2(fold$f$g,f,g):fold$f$g(f,g,m)}function fold(f,g,m){return isFunction(f)||invalidArgument("Future.fold",0,"be a function",f),1===arguments.length?partial1(fold$f,f):2===arguments.length?fold$f(f,g):fold$f(f,g,m)}function fork$f$g(f,g,m){return isFuture(m)||invalidFuture("Future.fork",2,m),m._fork(f,g)}function fork$f(f,g,m){return isFunction(g)||invalidArgument("Future.fork",1,"be a function",g),2===arguments.length?partial2(fork$f$g,f,g):fork$f$g(f,g,m)}function fork(f,g,m){return isFunction(f)||invalidArgument("Future.fork",0,"be a function",f),1===arguments.length?partial1(fork$f,f):2===arguments.length?fork$f(f,g):fork$f(f,g,m)}function promise(m){return isFuture(m)||invalidFuture("Future.promise",0,m),m.promise()}function value$cont(cont,m){return isFuture(m)||invalidFuture("Future.value",1,m),m.value(cont)}function value(cont,m){return isFunction(cont)||invalidArgument("Future.value",0,"be a Function",cont),1===arguments.length?partial1(value$cont,cont):value$cont(cont,m)}function extractLeft(m){return isFuture(m)||invalidFuture("Future.extractLeft",0,m),m.extractLeft()}function extractRight(m){return isFuture(m)||invalidFuture("Future.extractRight",0,m),m.extractRight()}function After$race(other){return other.isSettled()?other:isNever(other)?this:other instanceof After||other instanceof RejectAfter?other._time<this._time?other:this:Core._race.call(this,other)}function After(time,value){this._time=time,this._value=value}function RejectAfter(time,value){this._time=time,this._value=value}function after$time(time,value){return time===1/0?never:new After(time,value)}function after(time,value){return isUnsigned(time)||invalidArgument("Future.after",0,"be a positive integer",time),1===arguments.length?partial1(after$time,time):after$time(time,value)}function rejectAfter$time(time,reason){return time===1/0?never:new RejectAfter(time,reason)}function rejectAfter(time,reason){return isUnsigned(time)||invalidArgument("Future.rejectAfter",0,"be a positive integer",time),1===arguments.length?partial1(rejectAfter$time,time):rejectAfter$time(time,reason)}function Attempt(fn){this._fn=fn}function attempt(f){return isFunction(f)||invalidArgument("Future.try",0,"be a function",f),new Attempt(f)}function Queued(rej,res){this[Rejected$1]=rej,this[Resolved$1]=res}function Cached(pure){this._pure=pure,this.reset()}function cache(m){return isFuture(m)||invalidFuture("Future.cache",0,m),new Cached(m)}function ChainRec(step,init){this._step=step,this._init=init}function chainRec(step,init){return new ChainRec(step,init)}function Encase(fn,a){this._fn=fn,this._a=a}function encase(f,x){return isFunction(f)||invalidArgument("Future.encase",0,"be a function",f),1===arguments.length?partial1(encase,f):new Encase(f,x)}function Encase2(fn,a,b){this._fn=fn,this._a=a,this._b=b}function encase2(f,x,y){switch(isFunction(f)||invalidArgument("Future.encase2",0,"be a function",f),arguments.length){case 1:return partial1(encase2,f);case 2:return partial2(encase2,f,x);default:return new Encase2(f,x,y)}}function Encase3(fn,a,b,c){this._fn=fn,this._a=a,this._b=b,this._c=c}function encase3(f,x,y,z){switch(isFunction(f)||invalidArgument("Future.encase3",0,"be a function",f),arguments.length){case 1:return partial1(encase3,f);case 2:return partial2(encase3,f,x);case 3:return partial3(encase3,f,x,y);default:return new Encase3(f,x,y,z)}}function EncaseN(fn,a){this._fn=fn,this._a=a}function encaseN(f,x){return isFunction(f)||invalidArgument("Future.encaseN",0,"be a function",f),1===arguments.length?partial1(encaseN,f):new EncaseN(f,x)}function EncaseN2(fn,a,b){this._fn=fn,this._a=a,this._b=b}function encaseN2(f,x,y){switch(isFunction(f)||invalidArgument("Future.encaseN2",0,"be a function",f),arguments.length){case 1:return partial1(encaseN2,f);case 2:return partial2(encaseN2,f,x);default:return new EncaseN2(f,x,y)}}function EncaseN$1(fn,a,b,c){this._fn=fn,this._a=a,this._b=b,this._c=c}function encaseN3(f,x,y,z){switch(isFunction(f)||invalidArgument("Future.encaseN3",0,"be a function",f),arguments.length){case 1:return partial1(encaseN3,f);case 2:return partial2(encaseN3,f,x);case 3:return partial3(encaseN3,f,x,y);default:return new EncaseN$1(f,x,y,z)}}function check$promise(p,f,a){return isThenable(p)?p:typeError("Future.encaseP expects the function its given to return a Promise/Thenable\n  Actual: "+show(p)+"\n  From calling: "+showf(f)+"\n  With: "+show(a))}function EncaseP(fn,a){this._fn=fn,this._a=a}function encaseP(f,x){return isFunction(f)||invalidArgument("Future.encaseP",0,"be a function",f),1===arguments.length?partial1(encaseP,f):new EncaseP(f,x)}function check$promise$1(p,f,a,b){return isThenable(p)?p:typeError("Future.encaseP2 expects the function its given to return a Promise/Thenable\n  Actual: "+show(p)+"\n  From calling: "+showf(f)+"\n  With 1: "+show(a)+"\n  With 2: "+show(b))}function EncaseP2(fn,a,b){this._fn=fn,this._a=a,this._b=b}function encaseP2(f,x,y){switch(isFunction(f)||invalidArgument("Future.encaseP2",0,"be a function",f),arguments.length){case 1:return partial1(encaseP2,f);case 2:return partial2(encaseP2,f,x);default:return new EncaseP2(f,x,y)}}function check$promise$2(p,f,a,b,c){return isThenable(p)?p:typeError("Future.encaseP3 expects the function its given to return a Promise/Thenable\n  Actual: "+show(p)+"\n  From calling: "+showf(f)+"\n  With 1: "+show(a)+"\n  With 2: "+show(b)+"\n  With 3: "+show(c))}function EncaseP3(fn,a,b,c){this._fn=fn,this._a=a,this._b=b,this._c=c}function encaseP3(f,x,y,z){switch(isFunction(f)||invalidArgument("Future.encaseP3",0,"be a function",f),arguments.length){case 1:return partial1(encaseP3,f);case 2:return partial2(encaseP3,f,x);case 3:return partial3(encaseP3,f,x,y);default:return new EncaseP3(f,x,y,z)}}function Go(generator){this._generator=generator}function go(generator){return isFunction(generator)||invalidArgument("Future.do",0,"be a Function",generator),new Go(generator)}function check$dispose(m,f,x){isFuture(m)||invalidFuture("Future.hook","the first function its given to return a Future",m,"\n  From calling: "+showf(f)+"\n  With: "+show(x))}function check$consume(m,f,x){isFuture(m)||invalidFuture("Future.hook","the second function its given to return a Future",m,"\n  From calling: "+showf(f)+"\n  With: "+show(x))}function Hook(acquire,dispose,consume){this._acquire=acquire,this._dispose=dispose,this._consume=consume}function hook$acquire$cleanup(acquire,cleanup,consume){return isFunction(consume)||invalidArgument("Future.hook",2,"be a Future",consume),new Hook(acquire,cleanup,consume)}function hook$acquire(acquire,cleanup,consume){return isFunction(cleanup)||invalidArgument("Future.hook",1,"be a function",cleanup),2===arguments.length?partial2(hook$acquire$cleanup,acquire,cleanup):hook$acquire$cleanup(acquire,cleanup,consume)}function hook(acquire,cleanup,consume){return isFuture(acquire)||invalidFuture("Future.hook",0,acquire),1===arguments.length?partial1(hook$acquire,acquire):2===arguments.length?hook$acquire(acquire,cleanup):hook$acquire(acquire,cleanup,consume)}function Node(fn){this._fn=fn}function node(f){return isFunction(f)||invalidArgument("Future.node",0,"be a function",f),new Node(f)}function check$ap$f(f){isFunction(f)||typeError("Future#ap expects its first argument to be a Future of a Function\n  Actual: Future.of("+show(f)+")")}function ParallelAp(mval,mfunc){this._mval=mval,this._mfunc=mfunc}function isParallel(x){return x instanceof Par||type(x)===Par["@@type"]}function seq(par){return isParallel(par)||invalidArgument("Future.seq",0,"to be a Par",par),par.sequential}function Parallel(max,futures){this._futures=futures,this._length=futures.length,this._max=Math.min(this._length,max)}function parallel$max(max,xs){isArray(xs)||invalidArgument("Future.parallel",1,"be an array",xs);var futures=mapArray(xs,check$parallel);return 0===futures.length?emptyArray:new Parallel(max,futures)}function parallel(max,xs){return isUnsigned(max)||invalidArgument("Future.parallel",0,"be a positive integer",max),1===arguments.length?partial1(parallel$max,max):parallel$max(max,xs)}function check$promise$3(p,f){return isThenable(p)?p:typeError("Future.tryP expects the function its given to return a Promise/Thenable\n  Actual: "+show(p)+"\n  From calling: "+showf(f))}function TryP(fn){this._fn=fn}function tryP(f){return isFunction(f)||invalidArgument("Future.tryP",0,"be a function",f),new TryP(f)}Denque="default"in Denque?Denque.default:Denque,Z="default"in Z?Z.default:Z,inspectf="default"in inspectf?inspectf.default:inspectf,type="default"in type?type.default:type,concurrify="default"in concurrify?concurrify.default:concurrify;var noop=function(){},moop=function(){return this},show=Z.toString,padf=function(sf,s){return s.replace(/^/gm,sf).replace(sf,"")},showf=function(f){return padf("  ",inspectf(2,f))},mapArray=function(xs,f){for(var l=xs.length,ys=new Array(l),i=0;i<l;i++)ys[i]=f(xs[i],i,xs);return ys},partial1=function(f,a){return function(b,c,d){switch(arguments.length){case 1:return f(a,b);case 2:return f(a,b,c);default:return f(a,b,c,d)}}},partial2=function(f,a,b){return function(c,d){return 1===arguments.length?f(a,b,c):f(a,b,c,d)}},partial3=function(f,a,b,c){return function(d){return f(a,b,c,d)}},escapeTick=function(f){return function(x){setTimeout(function(){f(x)},0)}},isFunction=function(f){return"function"==typeof f},isThenable=function(m){return m instanceof Promise||Boolean(m)&&isFunction(m.then)},isBoolean=function(f){return"boolean"==typeof f},isNumber=function(f){return"number"==typeof f},isUnsigned=function(n){return n===1/0||isNumber(n)&&n>0&&n%1==0},isObject=function(o){return null!==o&&"object"==typeof o},isIterator=function(i){return isObject(i)&&isFunction(i.next)},isArray=Array.isArray,FL={map:"fantasy-land/map",bimap:"fantasy-land/bimap",chain:"fantasy-land/chain",chainRec:"fantasy-land/chainRec",ap:"fantasy-land/ap",of:"fantasy-land/of"},ordinal=["first","second","third","fourth","fifth"],$$type="fluture/Future@2",error=function(message){throw new Error(message)},typeError=function(message){throw new TypeError(message)},invalidArgument=function(it,at,expected,actual){return typeError(it+" expects its "+ordinal[at]+" argument to "+expected+"\n  Actual: "+show(actual))},invalidContext=function(it,actual){return typeError(it+" was invoked outside the context of a Future. You might want to use a dispatcher instead\n  Called on: "+show(actual))},invalidNamespace=function(m,x){return"The Future was not created by fluture. Make sure you transform other Futures to fluture Futures. Got "+(x?"a Future from "+x:"an unscoped Future")+".\n  See: https://github.com/fluture-js/Fluture#casting-futures"},invalidVersion=function(m,x){return"The Future was created by "+(x<2?"an older":"a newer")+" version of fluture. This means that one of the sources which creates Futures is outdated. Update this source, or transform its created Futures to be compatible.\n  See: https://github.com/fluture-js/Fluture#casting-futures"},invalidFuture=function(it,at,m,s){void 0===s&&(s="");var id=type.parse(type(m)),info="Future"===id.name?"\n"+("fluture"!==id.namespace?invalidNamespace(0,id.namespace):2!==id.version?invalidVersion(0,id.version):"Nothing seems wrong. Contact the Fluture maintainers."):"";typeError(it+" expects "+(ordinal[at]?"its "+ordinal[at]+" argument to be a valid Future":at)+"."+info+"\n  Actual: "+show(m)+" :: "+id.name+s)},throwRejection=function(x){return error("Future#value was called on a rejected Future\n  Actual: Future.reject("+show(x)+")")};Future.prototype[FL.ap]=function(other){return other._ap(this)},Future.prototype[FL.map]=function(mapper){return this._map(mapper)},Future.prototype[FL.bimap]=function(lmapper,rmapper){return this._bimap(lmapper,rmapper)},Future.prototype[FL.chain]=function(mapper){return this._chain(mapper)},Future.prototype.ap=function(other){return isFuture(this)||invalidContext("Future#ap",this),isFuture(other)||invalidFuture("Future#ap",0,other),this._ap(other)},Future.prototype.map=function(mapper){return isFuture(this)||invalidContext("Future#map",this),isFunction(mapper)||invalidArgument("Future#map",0,"to be a Function",mapper),this._map(mapper)},Future.prototype.bimap=function(lmapper,rmapper){return isFuture(this)||invalidContext("Future#bimap",this),isFunction(lmapper)||invalidArgument("Future#bimap",0,"to be a Function",lmapper),isFunction(rmapper)||invalidArgument("Future#bimap",1,"to be a Function",rmapper),this._bimap(lmapper,rmapper)},Future.prototype.chain=function(mapper){return isFuture(this)||invalidContext("Future#chain",this),isFunction(mapper)||invalidArgument("Future#chain",0,"to be a Function",mapper),this._chain(mapper)},Future.prototype.mapRej=function(mapper){return isFuture(this)||invalidContext("Future#mapRej",this),isFunction(mapper)||invalidArgument("Future#mapRej",0,"to be a Function",mapper),this._mapRej(mapper)},Future.prototype.chainRej=function(mapper){return isFuture(this)||invalidContext("Future#chainRej",this),isFunction(mapper)||invalidArgument("Future#chainRej",0,"to be a Function",mapper),this._chainRej(mapper)},Future.prototype.race=function(other){return isFuture(this)||invalidContext("Future#race",this),isFuture(other)||invalidFuture("Future#race",0,other),this._race(other)},Future.prototype.both=function(other){return isFuture(this)||invalidContext("Future#both",this),isFuture(other)||invalidFuture("Future#both",0,other),this._both(other)},Future.prototype.and=function(other){return isFuture(this)||invalidContext("Future#and",this),isFuture(other)||invalidFuture("Future#and",0,other),this._and(other)},Future.prototype.or=function(other){return isFuture(this)||invalidContext("Future#or",this),isFuture(other)||invalidFuture("Future#or",0,other),this._or(other)},Future.prototype.swap=function(){return isFuture(this)||invalidContext("Future#ap",this),this._swap()},Future.prototype.fold=function(lmapper,rmapper){return isFuture(this)||invalidContext("Future#ap",this),isFunction(lmapper)||invalidArgument("Future#fold",0,"to be a Function",lmapper),isFunction(rmapper)||invalidArgument("Future#fold",1,"to be a Function",rmapper),this._fold(lmapper,rmapper)},Future.prototype.finally=function(other){return isFuture(this)||invalidContext("Future#finally",this),isFuture(other)||invalidFuture("Future#finally",0,other),this._finally(other)},Future.prototype.lastly=function(other){return isFuture(this)||invalidContext("Future#lastly",this),isFuture(other)||invalidFuture("Future#lastly",0,other),this._finally(other)},Future.prototype.fork=function(rej,res){return isFuture(this)||invalidContext("Future#fork",this),isFunction(rej)||invalidArgument("Future#fork",0,"to be a Function",rej),isFunction(res)||invalidArgument("Future#fork",0,"to be a Function",res),this._fork(rej,res)},Future.prototype.value=function(res){return isFuture(this)||invalidContext("Future#value",this),isFunction(res)||invalidArgument("Future#value",0,"to be a Function",res),this._fork(throwRejection,res)},Future.prototype.promise=function(){var this$1=this;return new Promise(function(res,rej){return this$1._fork(rej,res)})},Future.prototype.isRejected=function(){return!1},Future.prototype.isResolved=function(){return!1},Future.prototype.isSettled=function(){return this.isRejected()||this.isResolved()},Future.prototype.extractLeft=function(){return[]},Future.prototype.extractRight=function(){return[]};var Core=Object.create(Future.prototype);Core._ap=function(other){return new Sequence(this,[new ApAction(other)])},Core._map=function(mapper){return new Sequence(this,[new MapAction(mapper)])},Core._bimap=function(lmapper,rmapper){return new Sequence(this,[new BimapAction(lmapper,rmapper)])},Core._chain=function(mapper){return new Sequence(this,[new ChainAction(mapper)])},Core._mapRej=function(mapper){return new Sequence(this,[new MapRejAction(mapper)])},Core._chainRej=function(mapper){return new Sequence(this,[new ChainRejAction(mapper)])},Core._race=function(other){return new Sequence(this,[new RaceAction(other)])},Core._both=function(other){return new Sequence(this,[new BothAction(other)])},Core._and=function(other){return new Sequence(this,[new AndAction(other)])},Core._or=function(other){return new Sequence(this,[new OrAction(other)])},Core._swap=function(){return new Sequence(this,[new SwapAction])},Core._fold=function(lmapper,rmapper){return new Sequence(this,[new FoldAction(lmapper,rmapper)])},Core._finally=function(other){return new Sequence(this,[new FinallyAction(other)])},Computation.prototype=Object.create(Core),Computation.prototype._fork=function(rej,res){var open=!0,f=this._computation(function(x){open&&(open=!1,rej(x))},function(x){open&&(open=!1,res(x))});return check$fork(f,this._computation),function(){open&&f&&f(),open=!1}},Computation.prototype.toString=function(){return"Future("+showf(this._computation)+")"},Rejected.prototype=Object.create(Core),Rejected.prototype._ap=moop,Rejected.prototype._map=moop,Rejected.prototype._chain=moop,Rejected.prototype._race=moop,Rejected.prototype._both=moop,Rejected.prototype._and=moop,Rejected.prototype._or=function(other){return other},Rejected.prototype._finally=function(other){return other._and(this)},Rejected.prototype._swap=function(){return new Resolved(this._value)},Rejected.prototype._fork=function(rej){return rej(this._value),noop},Rejected.prototype.isRejected=function(){return!0},Rejected.prototype.extractLeft=function(){return[this._value]},Rejected.prototype.toString=function(){return"Future.reject("+show(this._value)+")"};var reject=function(x){return new Rejected(x)};Resolved.prototype=Object.create(Core),Resolved.prototype._race=moop,Resolved.prototype._mapRej=moop,Resolved.prototype._or=moop,Resolved.prototype._and=function(other){return other},Resolved.prototype._both=function(other){var this$1=this;return other._map(function(x){return[this$1._value,x]})},Resolved.prototype._swap=function(){return new Rejected(this._value)},Resolved.prototype._finally=function(other){var this$1=this;return other._map(function(){return this$1._value})},Resolved.prototype._fork=function(rej,res){return res(this._value),noop},Resolved.prototype.isResolved=function(){return!0},Resolved.prototype.extractRight=function(){return[this._value]},Resolved.prototype.toString=function(){return"Future.of("+show(this._value)+")"};var of=function(x){return new Resolved(x)};Never.prototype=Object.create(Future.prototype),Never.prototype._ap=moop,Never.prototype._map=moop,Never.prototype._bimap=moop,Never.prototype._chain=moop,Never.prototype._mapRej=moop,Never.prototype._chainRej=moop,Never.prototype._both=moop,Never.prototype._or=moop,Never.prototype._swap=moop,Never.prototype._fold=moop,Never.prototype._finally=moop,Never.prototype._race=function(other){return other},Never.prototype._fork=function(){return noop},Never.prototype.toString=function(){return"Future.never"};var never=new Never,isNever=function(x){return x===never};Eager.prototype=Object.create(Core),Eager.prototype._fork=function(rej,res){return this.rejected?rej(this.value):this.resolved?res(this.value):(this.rej=rej,this.res=res),this.cancel};var Action=function(){};Action.prototype.rejected=function(x){return new Rejected(x)},Action.prototype.resolved=function(x){return new Resolved(x)},Action.prototype.run=function(){return this},Action.prototype.cancel=function(){};var check$ap=function(f){return isFunction(f)?f:typeError("Future#ap expects its first argument to be a Future of a Function\n  Actual: Future.of("+show(f)+")")},ApAction=function(Action){function ApAction(other){Action.call(this),this.other=other}return Action&&(ApAction.__proto__=Action),ApAction.prototype=Object.create(Action&&Action.prototype),ApAction.prototype.constructor=ApAction,ApAction.prototype.resolved=function(f){return check$ap(f),this.other._map(function(x){return f(x)})},ApAction.prototype.toString=function(){return"ap("+this.other.toString()+")"},ApAction}(Action),MapAction=function(Action){function MapAction(mapper){Action.call(this),this.mapper=mapper}return Action&&(MapAction.__proto__=Action),MapAction.prototype=Object.create(Action&&Action.prototype),MapAction.prototype.constructor=MapAction,MapAction.prototype.resolved=function(x){return new Resolved(this.mapper(x))},MapAction.prototype.toString=function(){return"map("+showf(this.mapper)+")"},MapAction}(Action),BimapAction=function(Action){function BimapAction(lmapper,rmapper){Action.call(this),this.lmapper=lmapper,this.rmapper=rmapper}return Action&&(BimapAction.__proto__=Action),BimapAction.prototype=Object.create(Action&&Action.prototype),BimapAction.prototype.constructor=BimapAction,BimapAction.prototype.rejected=function(x){return new Rejected(this.lmapper(x))},BimapAction.prototype.resolved=function(x){return new Resolved(this.rmapper(x))},BimapAction.prototype.toString=function(){return"bimap("+showf(this.lmapper)+", "+showf(this.rmapper)+")"},BimapAction}(Action),check$chain=function(m,f,x){return isFuture(m)?m:invalidFuture("Future#chain","the function its given to return a Future",m,"\n  From calling: "+showf(f)+"\n  With: "+show(x))},ChainAction=function(Action){function ChainAction(mapper){Action.call(this),this.mapper=mapper}return Action&&(ChainAction.__proto__=Action),ChainAction.prototype=Object.create(Action&&Action.prototype),ChainAction.prototype.constructor=ChainAction,ChainAction.prototype.resolved=function(x){return check$chain(this.mapper(x),this.mapper,x)},ChainAction.prototype.toString=function(){return"chain("+showf(this.mapper)+")"},ChainAction}(Action),MapRejAction=function(Action){function MapRejAction(mapper){Action.call(this),this.mapper=mapper}return Action&&(MapRejAction.__proto__=Action),MapRejAction.prototype=Object.create(Action&&Action.prototype),MapRejAction.prototype.constructor=MapRejAction,MapRejAction.prototype.rejected=function(x){return new Rejected(this.mapper(x))},MapRejAction.prototype.toString=function(){return"mapRej("+showf(this.mapper)+")"},MapRejAction}(Action),check$chainRej=function(m,f,x){return isFuture(m)?m:invalidFuture("Future#chainRej","the function its given to return a Future",m,"\n  From calling: "+showf(f)+"\n  With: "+show(x))},ChainRejAction=function(Action){function ChainRejAction(mapper){Action.call(this),this.mapper=mapper}return Action&&(ChainRejAction.__proto__=Action),ChainRejAction.prototype=Object.create(Action&&Action.prototype),ChainRejAction.prototype.constructor=ChainRejAction,ChainRejAction.prototype.rejected=function(x){return check$chainRej(this.mapper(x),this.mapper,x)},ChainRejAction.prototype.toString=function(){return"chainRej("+showf(this.mapper)+")"},ChainRejAction}(Action),SwapAction=function(Action){function SwapAction(){return Action.call(this),SwapAction.instance||(SwapAction.instance=this)}return Action&&(SwapAction.__proto__=Action),SwapAction.prototype=Object.create(Action&&Action.prototype),SwapAction.prototype.constructor=SwapAction,SwapAction.prototype.rejected=function(x){return new Resolved(x)},SwapAction.prototype.resolved=function(x){return new Rejected(x)},SwapAction.prototype.toString=function(){return"swap()"},SwapAction}(Action),FoldAction=function(Action){function FoldAction(lmapper,rmapper){Action.call(this),this.lmapper=lmapper,this.rmapper=rmapper}return Action&&(FoldAction.__proto__=Action),FoldAction.prototype=Object.create(Action&&Action.prototype),FoldAction.prototype.constructor=FoldAction,FoldAction.prototype.rejected=function(x){return new Resolved(this.lmapper(x))},FoldAction.prototype.resolved=function(x){return new Resolved(this.rmapper(x))},FoldAction.prototype.toString=function(){return"fold("+showf(this.lmapper)+", "+showf(this.rmapper)+")"},FoldAction}(Action),FinallyAction=function(Action){function FinallyAction(other){Action.call(this),this.other=other}return Action&&(FinallyAction.__proto__=Action),FinallyAction.prototype=Object.create(Action&&Action.prototype),FinallyAction.prototype.constructor=FinallyAction,FinallyAction.prototype.cancel=function(){this.other._fork(noop,noop)()},FinallyAction.prototype.rejected=function(x){return this.other._and(new Rejected(x))},FinallyAction.prototype.resolved=function(x){return this.other._map(function(){return x})},FinallyAction.prototype.toString=function(){return"finally("+this.other.toString()+")"},FinallyAction}(Action),AndAction=function(Action){function AndAction(other){Action.call(this),this.other=other}return Action&&(AndAction.__proto__=Action),AndAction.prototype=Object.create(Action&&Action.prototype),AndAction.prototype.constructor=AndAction,AndAction.prototype.resolved=function(){return this.other},AndAction.prototype.toString=function(){return"and("+this.other.toString()+")"},AndAction}(Action),OrAction=function(Action){function OrAction(other){Action.call(this),this.other=other}return Action&&(OrAction.__proto__=Action),OrAction.prototype=Object.create(Action&&Action.prototype),OrAction.prototype.constructor=OrAction,OrAction.prototype.rejected=function(){return this.other},OrAction.prototype.toString=function(){return"or("+this.other.toString()+")"},OrAction}(Action),RaceAction=function(Action){function RaceAction(other){Action.call(this),this.other=other}return Action&&(RaceAction.__proto__=Action),RaceAction.prototype=Object.create(Action&&Action.prototype),RaceAction.prototype.constructor=RaceAction,RaceAction.prototype.run=function(early){return new RaceActionState(early,this.other)},RaceAction.prototype.toString=function(){return"race("+this.other.toString()+")"},RaceAction}(Action),RaceActionState=function(RaceAction){function RaceActionState(early,other){var this$1=this;RaceAction.call(this,other),this.cancel=other._fork(function(x){return early(new Rejected(x),this$1)},function(x){return early(new Resolved(x),this$1)})}return RaceAction&&(RaceActionState.__proto__=RaceAction),RaceActionState.prototype=Object.create(RaceAction&&RaceAction.prototype),RaceActionState.prototype.constructor=RaceActionState,RaceActionState.prototype.rejected=function(x){return this.cancel(),new Rejected(x)},RaceActionState.prototype.resolved=function(x){return this.cancel(),new Resolved(x)},RaceActionState}(RaceAction),BothAction=function(Action){function BothAction(other){Action.call(this),this.other=other}return Action&&(BothAction.__proto__=Action),BothAction.prototype=Object.create(Action&&Action.prototype),BothAction.prototype.constructor=BothAction,BothAction.prototype.run=function(early){return new BothActionState(early,this.other)},BothAction.prototype.resolved=function(x){return this.other._map(function(y){return[x,y]})},BothAction.prototype.toString=function(){return"both("+this.other.toString()+")"},BothAction}(Action),BothActionState=function(BothAction){
+function BothActionState(early,other){var this$1=this;BothAction.call(this,new Eager(other)),this.cancel=this.other.fork(function(x){return early(new Rejected(x),this$1)},noop)}return BothAction&&(BothActionState.__proto__=BothAction),BothActionState.prototype=Object.create(BothAction&&BothAction.prototype),BothActionState.prototype.constructor=BothActionState,BothActionState}(BothAction);Sequence.prototype=Object.create(Future.prototype),Sequence.prototype._transform=function(action){return new Sequence(this._spawn,this._actions.concat([action]))},Sequence.prototype._ap=function(other){return this._transform(new ApAction(other))},Sequence.prototype._map=function(mapper){return this._transform(new MapAction(mapper))},Sequence.prototype._bimap=function(lmapper,rmapper){return this._transform(new BimapAction(lmapper,rmapper))},Sequence.prototype._chain=function(mapper){return this._transform(new ChainAction(mapper))},Sequence.prototype._mapRej=function(mapper){return this._transform(new MapRejAction(mapper))},Sequence.prototype._chainRej=function(mapper){return this._transform(new ChainRejAction(mapper))},Sequence.prototype._race=function(other){return isNever(other)?this:this._transform(new RaceAction(other))},Sequence.prototype._both=function(other){return this._transform(new BothAction(other))},Sequence.prototype._and=function(other){return this._transform(new AndAction(other))},Sequence.prototype._or=function(other){return this._transform(new OrAction(other))},Sequence.prototype._swap=function(){return this._transform(new SwapAction)},Sequence.prototype._fold=function(lmapper,rmapper){return this._transform(new FoldAction(lmapper,rmapper))},Sequence.prototype._finally=function(other){return this._transform(new FinallyAction(other))},Sequence.prototype._fork=function(rej,res){function settle(m){if(settled=!0,(future=m)instanceof Sequence){for(var i=future._actions.length-1;i>=0;i--)stack.unshift(future._actions[i]);future=future._spawn}}function early(m,terminator){if(cancel(),action!==terminator)for(action.cancel();(it=queue.shift())&&it!==terminator;)it.cancel();settle(m),async&&drain()}function rejected(x){settle(action.rejected(x)),async&&drain()}function resolved(x){settle(action.resolved(x)),async&&drain()}function drain(){for(async=!1;action=stack.shift()||queue.shift();)if(settled=!1,cancel=future._fork(rejected,resolved),!settled&&(action=action.run(early),!settled)){for(;it=stack.shift();){var tmp=it.run(early);if(settled)break;queue.push(tmp)}if(!settled)return void(async=!0)}cancel=future._fork(rej,res)}var action,it,settled,async,stack=new Denque(this._actions),queue=new Denque(this._actions.length),cancel=noop,future=this._spawn;return drain(),function(){for(cancel(),action&&action.cancel();it=queue.shift();)it.cancel();stack.clear(),cancel=noop}},Sequence.prototype.toString=function(){return""+this._spawn.toString()+this._actions.map(function(x){return"."+x.toString()}).join("")},Future["@@type"]=$$type,Future[FL.of]=of;var dispatchers=Object.freeze({ap:ap,map:map,bimap:bimap,chain:chain,mapRej:mapRej,chainRej:chainRej,lastly:lastly,finally:lastly,and:and,both:both,or:or,race:race,swap:swap,fold:fold,fork:fork,promise:promise,value:value,extractLeft:extractLeft,extractRight:extractRight});After.prototype=Object.create(Core),After.prototype._race=After$race,After.prototype._swap=function(){return new RejectAfter(this._time,this._value)},After.prototype._fork=function(rej,res){var id=setTimeout(res,this._time,this._value);return function(){clearTimeout(id)}},After.prototype.extractRight=function(){return[this._value]},After.prototype.toString=function(){return"Future.after("+show(this._time)+", "+show(this._value)+")"},RejectAfter.prototype=Object.create(Core),RejectAfter.prototype._race=After$race,RejectAfter.prototype._swap=function(){return new After(this._time,this._value)},RejectAfter.prototype._fork=function(rej){var id=setTimeout(rej,this._time,this._value);return function(){clearTimeout(id)}},RejectAfter.prototype.extractLeft=function(){return[this._value]},RejectAfter.prototype.toString=function(){return"Future.rejectAfter("+show(this._time)+", "+show(this._value)+")"},Attempt.prototype=Object.create(Core),Attempt.prototype._fork=function(rej,res){var r;try{r=this._fn()}catch(e){return rej(e),noop}return res(r),noop},Attempt.prototype.toString=function(){return"Future.try("+showf(this._fn)+")"};var Cold=Cached.Cold=0,Pending=Cached.Pending=1,Rejected$1=Cached.Rejected=2,Resolved$1=Cached.Resolved=3;Cached.prototype=Object.create(Core),Cached.prototype.isRejected=function(){return this._state===Rejected$1},Cached.prototype.isResolved=function(){return this._state===Resolved$1},Cached.prototype.extractLeft=function(){return this.isRejected()?[this._value]:[]},Cached.prototype.extractRight=function(){return this.isResolved()?[this._value]:[]},Cached.prototype._addToQueue=function(rej,res){var _this=this;if(_this._state>Pending)return noop;var i=_this._queue.push(new Queued(rej,res))-1;return _this._queued=_this._queued+1,function(){_this._state>Pending||(_this._queue[i]=void 0,_this._queued=_this._queued-1,0===_this._queued&&_this.reset())}},Cached.prototype._drainQueue=function(){if(!(this._state<=Pending)&&0!==this._queued){for(var queue=this._queue,length=queue.length,state=this._state,value=this._value,i=0;i<length;i++)queue[i]&&queue[i][state](value),queue[i]=void 0;this._queue=void 0,this._queued=0}},Cached.prototype.reject=function(reason){this._state>Pending||(this._value=reason,this._state=Rejected$1,this._drainQueue())},Cached.prototype.resolve=function(value){this._state>Pending||(this._value=value,this._state=Resolved$1,this._drainQueue())},Cached.prototype.run=function(){var _this=this;_this._state>Cold||(_this._state=Pending,_this._cancel=_this._pure._fork(function(x){_this.reject(x)},function(x){_this.resolve(x)}))},Cached.prototype.reset=function(){this._state!==Cold&&(this._state>Pending&&this._cancel(),this._cancel=noop,this._queue=[],this._queued=0,this._value=void 0,this._state=Cold)},Cached.prototype._fork=function(rej,res){var cancel=noop;switch(this._state){case Pending:cancel=this._addToQueue(rej,res);break;case Rejected$1:rej(this._value);break;case Resolved$1:res(this._value);break;default:cancel=this._addToQueue(rej,res),this.run()}return cancel},Cached.prototype.toString=function(){return"Future.cache("+this._pure.toString()+")"};var Next=function(x){return{done:!1,value:x}},Done=function(x){return{done:!0,value:x}},isIteration=function(x){return isObject(x)&&isBoolean(x.done)},Undetermined=0,Synchronous=1,Asynchronous=2;ChainRec.prototype=Object.create(Core),ChainRec.prototype._fork=function(rej,res){function resolved(it){state=it,timing=timing===Undetermined?Synchronous:drain()}function drain(){for(;!state.done;){timing=Undetermined;var m=_step(Next,Done,state.value);if(cancel=m._fork(rej,resolved),timing!==Synchronous)return void(timing=Asynchronous)}res(state.value)}var ref=this,_step=ref._step,_init=ref._init,timing=Undetermined,cancel=noop,state=Next(_init);return drain(),function(){cancel()}},ChainRec.prototype.toString=function(){return"Future.chainRec("+showf(this._step)+", "+show(this._init)+")"},Future[FL.chainRec]=chainRec,Encase.prototype=Object.create(Core),Encase.prototype._fork=function(rej,res){var r;try{r=this._fn(this._a)}catch(e){return rej(e),noop}return res(r),noop},Encase.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a;return"Future.encase("+showf(_fn)+", "+show(_a)+")"},Encase2.prototype=Object.create(Core),Encase2.prototype._fork=function(rej,res){var r;try{r=this._fn(this._a,this._b)}catch(e){return rej(e),noop}return res(r),noop},Encase2.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b;return"Future.encase2("+showf(_fn)+", "+show(_a)+", "+show(_b)+")"},Encase3.prototype=Object.create(Core),Encase3.prototype._fork=function(rej,res){var r;try{r=this._fn(this._a,this._b,this._c)}catch(e){return rej(e),noop}return res(r),noop},Encase3.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b,_c=ref._c;return"Future.encase3("+showf(_fn)+", "+show(_a)+", "+show(_b)+", "+show(_c)+")"},EncaseN.prototype=Object.create(Core),EncaseN.prototype._fork=function(rej,res){var open=!0;return this._fn(this._a,function(err,val){open&&(open=!1,err?rej(err):res(val))}),function(){open=!1}},EncaseN.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a;return"Future.encaseN("+showf(_fn)+", "+show(_a)+")"},EncaseN2.prototype=Object.create(Core),EncaseN2.prototype._fork=function(rej,res){var open=!0;return this._fn(this._a,this._b,function(err,val){open&&(open=!1,err?rej(err):res(val))}),function(){open=!1}},EncaseN2.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b;return"Future.encaseN2("+showf(_fn)+", "+show(_a)+", "+show(_b)+")"},EncaseN$1.prototype=Object.create(Core),EncaseN$1.prototype._fork=function(rej,res){var open=!0;return this._fn(this._a,this._b,this._c,function(err,val){open&&(open=!1,err?rej(err):res(val))}),function(){open=!1}},EncaseN$1.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b,_c=ref._c;return"Future.encaseN3("+showf(_fn)+", "+show(_a)+", "+show(_b)+", "+show(_c)+")"},EncaseP.prototype=Object.create(Core),EncaseP.prototype._fork=function(rej,res){var ref=this,_fn=ref._fn,_a=ref._a;return check$promise(_fn(_a),_fn,_a).then(escapeTick(res),escapeTick(rej)),noop},EncaseP.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a;return"Future.encaseP("+showf(_fn)+", "+show(_a)+")"},EncaseP2.prototype=Object.create(Core),EncaseP2.prototype._fork=function(rej,res){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b;return check$promise$1(_fn(_a,_b),_fn,_a,_b).then(escapeTick(res),escapeTick(rej)),noop},EncaseP2.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b;return"Future.encaseP2("+showf(_fn)+", "+show(_a)+", "+show(_b)+")"},EncaseP3.prototype=Object.create(Core),EncaseP3.prototype._fork=function(rej,res){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b,_c=ref._c;return check$promise$2(_fn(_a,_b,_c),_fn,_a,_b,_c).then(escapeTick(res),escapeTick(rej)),noop},EncaseP3.prototype.toString=function(){var ref=this,_fn=ref._fn,_a=ref._a,_b=ref._b,_c=ref._c;return"Future.encaseP3("+show(_fn)+", "+show(_a)+", "+show(_b)+", "+show(_c)+")"};var check$iterator=function(g){return isIterator(g)?g:invalidArgument("Future.do",0,'return an iterator, maybe you forgot the "*"',g)},check$iteration=function(o){return isIteration(o)||typeError("Future.do was given an invalid generator: Its iterator did not return a valid iteration from iterator.next()\n  Actual: "+show(o)),o.done||isFuture(o.value)?o:invalidFuture("Future.do","the iterator to produce only valid Futures",o.value,"\n  Tip: If you're using a generator, make sure you always yield a Future")};Go.prototype=Object.create(Core),Go.prototype._fork=function(rej,res){function resolved(x){if(value=x,timing===Asynchronous)return drain();timing=Synchronous,state=check$iteration(iterator.next(value))}function drain(){for(state=check$iteration(iterator.next(value));!state.done;)if(timing=Undetermined,cancel=state.value._fork(rej,resolved),timing!==Synchronous)return void(timing=Asynchronous);res(state.value)}var state,value,iterator=check$iterator(this._generator()),timing=Undetermined,cancel=noop;return drain(),function(){cancel()}},Go.prototype.toString=function(){return"Future.do("+showf(this._generator)+")"},Hook.prototype=Object.create(Core),Hook.prototype._fork=function(rej,res){function Hook$done(){cont(value)}function Hook$dispose(){var disposal=_dispose(resource);return check$dispose(disposal,_dispose,resource),cancel=disposal._fork(rej,Hook$done)}function Hook$cancelConsuption(){cancelConsume(),Hook$dispose()()}function Hook$consumptionRejected(x){cont=rej,value=x,Hook$dispose()}function Hook$consumptionResolved(x){cont=res,value=x,Hook$dispose()}function Hook$acquireResolved(x){resource=x;var consumption=_consume(resource);check$consume(consumption,_consume,resource),cancel=Hook$cancelConsuption,cancelConsume=consumption._fork(Hook$consumptionRejected,Hook$consumptionResolved)}var cancel,resource,value,ref=this,_acquire=ref._acquire,_dispose=ref._dispose,_consume=ref._consume,cancelAcquire=noop,cancelConsume=noop,cont=noop;return cancelAcquire=_acquire._fork(rej,Hook$acquireResolved),cancel=cancel||cancelAcquire,function(){cancel()}},Hook.prototype.toString=function(){var ref=this,_acquire=ref._acquire,_dispose=ref._dispose,_consume=ref._consume;return"Future.hook("+_acquire.toString()+", "+showf(_dispose)+", "+showf(_consume)+")"},Node.prototype=Object.create(Core),Node.prototype._fork=function(rej,res){var open=!0;return this._fn(function(err,val){open&&(open=!1,err?rej(err):res(val))}),function(){open=!1}},Node.prototype.toString=function(){var ref=this,_fn=ref._fn;return"Future.node("+showf(_fn)+")"},ParallelAp.prototype=Object.create(Core),ParallelAp.prototype._fork=function(rej,res){function ParallelAp$rej(x){rejected||(rejected=!0,rej(x))}var func,val,c1,c2,okval=!1,okfunc=!1,rejected=!1;return c1=this._mval._fork(ParallelAp$rej,function(x){if(c1=noop,!okval)return okfunc=!0,void(val=x);res(func(x))}),c2=this._mfunc._fork(ParallelAp$rej,function(f){if(c2=noop,check$ap$f(f),!okfunc)return okval=!0,void(func=f);res(f(val))}),function(){c1(),c2()}},ParallelAp.prototype.toString=function(){return"new ParallelAp("+this._mval.toString()+", "+this._mfunc.toString()+")"};var Par=concurrify(Future,never,race,function(mval,mfunc){return new ParallelAp(mval,mfunc)}),check$parallel=function(m,i){return isFuture(m)?m:invalidFuture("Future.parallel","its second argument to be an array of valid Futures. The value at position "+i+" in the array is not a Future",m)};Parallel.prototype=Object.create(Core),Parallel.prototype._fork=function(rej,res){function Parallel$fork$cancelAll(){for(var n=0;n<_max;n++)cancels[n]&&cancels[n]()}function Parallel$fork$rej(reason){Parallel$fork$cancelAll(),rej(reason)}function Parallel$fork$run(future,idx,cancelSlot){cancels[cancelSlot]=future._fork(Parallel$fork$rej,function(value){out[idx]=value,i<_length?Parallel$fork$run(_futures[i],i++,cancelSlot):++i-_max===_length&&res(out)})}for(var ref=this,_futures=ref._futures,_length=ref._length,_max=ref._max,cancels=new Array(_max),out=new Array(_length),i=_max,n=0;n<_max;n++)Parallel$fork$run(_futures[n],n,n);return Parallel$fork$cancelAll},Parallel.prototype.toString=function(){return"Future.parallel("+this._max+", "+show(this._futures)+")"};var emptyArray=new Resolved([]);return TryP.prototype=Object.create(Core),TryP.prototype._fork=function(rej,res){var ref=this,_fn=ref._fn;return check$promise$3(_fn(),_fn).then(escapeTick(res),escapeTick(rej)),noop},TryP.prototype.toString=function(){var ref=this,_fn=ref._fn;return"Future.tryP("+show(_fn)+")"},"function"!=typeof Object.create&&error("Please polyfill Object.create to use Fluture"),"function"!=typeof Object.assign&&error("Please polyfill Object.assign to use Fluture"),"function"!=typeof Array.isArray&&error("Please polyfill Array.isArray to use Fluture"),Object.assign(Future,dispatchers,{Future:Future,after:after,attempt:attempt,cache:cache,chainRec:chainRec,do:go,encase:encase,encase2:encase2,encase3:encase3,encaseN:encaseN,encaseN2:encaseN2,encaseN3:encaseN3,encaseP:encaseP,encaseP2:encaseP2,encaseP3:encaseP3,go:go,hook:hook,isFuture:isFuture,isNever:isNever,never:never,node:node,of:of,Par:Par,parallel:parallel,reject:reject,rejectAfter:rejectAfter,seq:seq,try:attempt,tryP:tryP})});
+
+},{"concurrify":352,"denque":36,"inspect-f":39,"sanctuary-type-classes":354,"sanctuary-type-identifiers":356}],354:[function(require,module,exports){
+/*
+             ############                  #
+            ############                  ###
+                  #####                  #####
+                #####      ####################
+              #####       ######################
+            #####                     ###########
+          #####         ######################
+        #####          ####################
+      #####                        #####
+     ############                 ###
+    ############                 */
+
+//. # sanctuary-type-classes
+//.
+//. The [Fantasy Land Specification][FL] "specifies interoperability of common
+//. algebraic structures" by defining a number of type classes. For each type
+//. class, it states laws which every member of a type must obey in order for
+//. the type to be a member of the type class. In order for the Maybe type to
+//. be considered a [Functor][], for example, every `Maybe a` value must have
+//. a `fantasy-land/map` method which obeys the identity and composition laws.
+//.
+//. This project provides:
+//.
+//.   - [`TypeClass`](#TypeClass), a function for defining type classes;
+//.   - one `TypeClass` value for each Fantasy Land type class;
+//.   - lawful Fantasy Land methods for JavaScript's built-in types;
+//.   - one function for each Fantasy Land method; and
+//.   - several functions derived from these functions.
+//.
+//. ## Type-class hierarchy
+//.
+//. <pre>
+//:  Setoid   Semigroup   Foldable        Functor      Contravariant
+//: (equals)   (concat)   (reduce)         (map)        (contramap)
+//:     |         |           \         / | | | | \
+//:     |         |            \       /  | | | |  \
+//:     |         |             \     /   | | | |   \
+//:     |         |              \   /    | | | |    \
+//:     |         |               \ /     | | | |     \
+//:    Ord     Monoid         Traversable | | | |      \
+//:   (lte)    (empty)        (traverse)  / | | \       \
+//:                                      /  | |  \       \
+//:                                     /   / \   \       \
+//:                             Profunctor /   \ Bifunctor \
+//:                              (promap) /     \ (bimap)   \
+//:                                      /       \           \
+//:                                     /         \           \
+//:                                   Alt        Apply      Extend
+//:                                  (alt)        (ap)     (extend)
+//:                                   /           / \           \
+//:                                  /           /   \           \
+//:                                 /           /     \           \
+//:                                /           /       \           \
+//:                               /           /         \           \
+//:                             Plus    Applicative    Chain      Comonad
+//:                            (zero)       (of)      (chain)    (extract)
+//:                               \         / \         / \
+//:                                \       /   \       /   \
+//:                                 \     /     \     /     \
+//:                                  \   /       \   /       \
+//:                                   \ /         \ /         \
+//:                               Alternative    Monad     ChainRec
+//:                                                       (chainRec)
+//. </pre>
+//.
+//. ## API
+
+(function(f) {
+
+  'use strict';
+
+  /* istanbul ignore else */
+  if (typeof module === 'object' && typeof module.exports === 'object') {
+    module.exports = f(require('sanctuary-type-identifiers'));
+  } else if (typeof define === 'function' && define.amd != null) {
+    define(['sanctuary-type-identifiers'], f);
+  } else {
+    self.sanctuaryTypeClasses = f(self.sanctuaryTypeIdentifiers);
+  }
+
+}(function(type) {
+
+  'use strict';
+
+  //  concat_ :: Array a -> Array a -> Array a
+  function concat_(xs) {
+    return function(ys) {
+      return xs.concat(ys);
+    };
+  }
+
+  //  constant :: a -> b -> a
+  function constant(x) {
+    return function(y) {
+      return x;
+    };
+  }
+
+  //  has :: (String, Object) -> Boolean
+  function has(k, o) {
+    return Object.prototype.hasOwnProperty.call(o, k);
+  }
+
+  //  identity :: a -> a
+  function identity(x) { return x; }
+
+  //  pair :: a -> b -> Pair a b
+  function pair(x) {
+    return function(y) {
+      return [x, y];
+    };
+  }
+
+  //  sameType :: (a, b) -> Boolean
+  function sameType(x, y) {
+    return typeof x === typeof y && type(x) === type(y);
+  }
+
+  //  type Iteration a = { value :: a, done :: Boolean }
+
+  //  iterationNext :: a -> Iteration a
+  function iterationNext(x) { return {value: x, done: false}; }
+
+  //  iterationDone :: a -> Iteration a
+  function iterationDone(x) { return {value: x, done: true}; }
+
+  //# TypeClass :: (String, Array TypeClass, a -> Boolean) -> TypeClass
+  //.
+  //. The arguments are:
+  //.
+  //.   - the name of the type class, prefixed by its npm package name;
+  //.   - an array of dependencies; and
+  //.   - a predicate which accepts any JavaScript value and returns `true`
+  //.     if the value satisfies the requirements of the type class; `false`
+  //.     otherwise.
+  //.
+  //. Example:
+  //.
+  //. ```javascript
+  //. //    hasMethod :: String -> a -> Boolean
+  //. const hasMethod = name => x => x != null && typeof x[name] == 'function';
+  //.
+  //. //    Foo :: TypeClass
+  //. const Foo = Z.TypeClass('my-package/Foo', [], hasMethod('foo'));
+  //.
+  //. //    Bar :: TypeClass
+  //. const Bar = Z.TypeClass('my-package/Bar', [Foo], hasMethod('bar'));
+  //. ```
+  //.
+  //. Types whose values have a `foo` method are members of the Foo type class.
+  //. Members of the Foo type class whose values have a `bar` method are also
+  //. members of the Bar type class.
+  //.
+  //. Each `TypeClass` value has a `test` field: a function which accepts
+  //. any JavaScript value and returns `true` if the value satisfies the
+  //. type class's predicate and the predicates of all the type class's
+  //. dependencies; `false` otherwise.
+  //.
+  //. `TypeClass` values may be used with [sanctuary-def][type-classes]
+  //. to define parametrically polymorphic functions which verify their
+  //. type-class constraints at run time.
+  function TypeClass(name, dependencies, test) {
+    if (!(this instanceof TypeClass)) {
+      return new TypeClass(name, dependencies, test);
+    }
+    this.name = name;
+    this.test = function(x) {
+      return dependencies.every(function(d) { return d.test(x); }) && test(x);
+    };
+  }
+
+  TypeClass['@@type'] = 'sanctuary-type-classes/TypeClass';
+
+  //  data Location = Constructor | Value
+
+  //  Constructor :: Location
+  var Constructor = 'Constructor';
+
+  //  Value :: Location
+  var Value = 'Value';
+
+  //  _funcPath :: (Boolean, Array String, a) -> Nullable Function
+  function _funcPath(allowInheritedProps, path, _x) {
+    var x = _x;
+    for (var idx = 0; idx < path.length; idx += 1) {
+      var k = path[idx];
+      if (x == null || !(allowInheritedProps || has(k, x))) return null;
+      x = x[k];
+    }
+    return typeof x === 'function' ? x : null;
+  }
+
+  //  funcPath :: (Array String, a) -> Nullable Function
+  function funcPath(path, x) {
+    return _funcPath(true, path, x);
+  }
+
+  //  implPath :: Array String -> Nullable Function
+  function implPath(path) {
+    return _funcPath(false, path, implementations);
+  }
+
+  //  functionName :: Function -> String
+  var functionName = 'name' in function f() {} ?
+    function functionName(f) { return f.name; } :
+    /* istanbul ignore next */
+    function functionName(f) {
+      var match = /function (\w*)/.exec(f);
+      return match == null ? '' : match[1];
+    };
+
+  //  $ :: (String, Array TypeClass, StrMap (Array Location)) -> TypeClass
+  function $(_name, dependencies, requirements) {
+    function getBoundMethod(_name) {
+      var name = 'fantasy-land/' + _name;
+      return requirements[_name] === Constructor ?
+        function(typeRep) {
+          var f = funcPath([name], typeRep);
+          return f == null && typeof typeRep === 'function' ?
+            implPath([functionName(typeRep), name]) :
+            f;
+        } :
+        function(x) {
+          var isPrototype = x != null &&
+                            x.constructor != null &&
+                            x.constructor.prototype === x;
+          var m = null;
+          if (!isPrototype) m = funcPath([name], x);
+          if (m == null)    m = implPath([type(x), 'prototype', name]);
+          return m && m.bind(x);
+        };
+    }
+
+    var name = 'sanctuary-type-classes/' + _name;
+    var keys = Object.keys(requirements);
+
+    var typeClass = TypeClass(name, dependencies, function(x) {
+      return keys.every(function(_name) {
+        var arg = requirements[_name] === Constructor ? x.constructor : x;
+        return getBoundMethod(_name)(arg) != null;
+      });
+    });
+
+    typeClass.methods = keys.reduce(function(methods, _name) {
+      methods[_name] = getBoundMethod(_name);
+      return methods;
+    }, {});
+
+    return typeClass;
+  }
+
+  //# Setoid :: TypeClass
+  //.
+  //. `TypeClass` value for [Setoid][].
+  //.
+  //. ```javascript
+  //. > Setoid.test(null)
+  //. true
+  //. ```
+  var Setoid = $('Setoid', [], {equals: Value});
+
+  //# Ord :: TypeClass
+  //.
+  //. `TypeClass` value for [Ord][].
+  //.
+  //. ```javascript
+  //. > Ord.test(0)
+  //. true
+  //.
+  //. > Ord.test(Math.sqrt)
+  //. false
+  //. ```
+  var Ord = $('Ord', [Setoid], {lte: Value});
+
+  //# Semigroup :: TypeClass
+  //.
+  //. `TypeClass` value for [Semigroup][].
+  //.
+  //. ```javascript
+  //. > Semigroup.test('')
+  //. true
+  //.
+  //. > Semigroup.test(0)
+  //. false
+  //. ```
+  var Semigroup = $('Semigroup', [], {concat: Value});
+
+  //# Monoid :: TypeClass
+  //.
+  //. `TypeClass` value for [Monoid][].
+  //.
+  //. ```javascript
+  //. > Monoid.test('')
+  //. true
+  //.
+  //. > Monoid.test(0)
+  //. false
+  //. ```
+  var Monoid = $('Monoid', [Semigroup], {empty: Constructor});
+
+  //# Functor :: TypeClass
+  //.
+  //. `TypeClass` value for [Functor][].
+  //.
+  //. ```javascript
+  //. > Functor.test([])
+  //. true
+  //.
+  //. > Functor.test('')
+  //. false
+  //. ```
+  var Functor = $('Functor', [], {map: Value});
+
+  //# Bifunctor :: TypeClass
+  //.
+  //. `TypeClass` value for [Bifunctor][].
+  //.
+  //. ```javascript
+  //. > Bifunctor.test(Tuple('foo', 64))
+  //. true
+  //.
+  //. > Bifunctor.test([])
+  //. false
+  //. ```
+  var Bifunctor = $('Bifunctor', [Functor], {bimap: Value});
+
+  //# Profunctor :: TypeClass
+  //.
+  //. `TypeClass` value for [Profunctor][].
+  //.
+  //. ```javascript
+  //. > Profunctor.test(Math.sqrt)
+  //. true
+  //.
+  //. > Profunctor.test([])
+  //. false
+  //. ```
+  var Profunctor = $('Profunctor', [Functor], {promap: Value});
+
+  //# Apply :: TypeClass
+  //.
+  //. `TypeClass` value for [Apply][].
+  //.
+  //. ```javascript
+  //. > Apply.test([])
+  //. true
+  //.
+  //. > Apply.test('')
+  //. false
+  //. ```
+  var Apply = $('Apply', [Functor], {ap: Value});
+
+  //# Applicative :: TypeClass
+  //.
+  //. `TypeClass` value for [Applicative][].
+  //.
+  //. ```javascript
+  //. > Applicative.test([])
+  //. true
+  //.
+  //. > Applicative.test({})
+  //. false
+  //. ```
+  var Applicative = $('Applicative', [Apply], {of: Constructor});
+
+  //# Chain :: TypeClass
+  //.
+  //. `TypeClass` value for [Chain][].
+  //.
+  //. ```javascript
+  //. > Chain.test([])
+  //. true
+  //.
+  //. > Chain.test({})
+  //. false
+  //. ```
+  var Chain = $('Chain', [Apply], {chain: Value});
+
+  //# ChainRec :: TypeClass
+  //.
+  //. `TypeClass` value for [ChainRec][].
+  //.
+  //. ```javascript
+  //. > ChainRec.test([])
+  //. true
+  //.
+  //. > ChainRec.test({})
+  //. false
+  //. ```
+  var ChainRec = $('ChainRec', [Chain], {chainRec: Constructor});
+
+  //# Monad :: TypeClass
+  //.
+  //. `TypeClass` value for [Monad][].
+  //.
+  //. ```javascript
+  //. > Monad.test([])
+  //. true
+  //.
+  //. > Monad.test({})
+  //. false
+  //. ```
+  var Monad = $('Monad', [Applicative, Chain], {});
+
+  //# Alt :: TypeClass
+  //.
+  //. `TypeClass` value for [Alt][].
+  //.
+  //. ```javascript
+  //. > Alt.test({})
+  //. true
+  //.
+  //. > Alt.test('')
+  //. false
+  //. ```
+  var Alt = $('Alt', [Functor], {alt: Value});
+
+  //# Plus :: TypeClass
+  //.
+  //. `TypeClass` value for [Plus][].
+  //.
+  //. ```javascript
+  //. > Plus.test({})
+  //. true
+  //.
+  //. > Plus.test('')
+  //. false
+  //. ```
+  var Plus = $('Plus', [Alt], {zero: Constructor});
+
+  //# Alternative :: TypeClass
+  //.
+  //. `TypeClass` value for [Alternative][].
+  //.
+  //. ```javascript
+  //. > Alternative.test([])
+  //. true
+  //.
+  //. > Alternative.test({})
+  //. false
+  //. ```
+  var Alternative = $('Alternative', [Applicative, Plus], {});
+
+  //# Foldable :: TypeClass
+  //.
+  //. `TypeClass` value for [Foldable][].
+  //.
+  //. ```javascript
+  //. > Foldable.test({})
+  //. true
+  //.
+  //. > Foldable.test('')
+  //. false
+  //. ```
+  var Foldable = $('Foldable', [], {reduce: Value});
+
+  //# Traversable :: TypeClass
+  //.
+  //. `TypeClass` value for [Traversable][].
+  //.
+  //. ```javascript
+  //. > Traversable.test([])
+  //. true
+  //.
+  //. > Traversable.test('')
+  //. false
+  //. ```
+  var Traversable = $('Traversable', [Functor, Foldable], {traverse: Value});
+
+  //# Extend :: TypeClass
+  //.
+  //. `TypeClass` value for [Extend][].
+  //.
+  //. ```javascript
+  //. > Extend.test([])
+  //. true
+  //.
+  //. > Extend.test({})
+  //. false
+  //. ```
+  var Extend = $('Extend', [Functor], {extend: Value});
+
+  //# Comonad :: TypeClass
+  //.
+  //. `TypeClass` value for [Comonad][].
+  //.
+  //. ```javascript
+  //. > Comonad.test(Identity(0))
+  //. true
+  //.
+  //. > Comonad.test([])
+  //. false
+  //. ```
+  var Comonad = $('Comonad', [Extend], {extract: Value});
+
+  //# Contravariant :: TypeClass
+  //.
+  //. `TypeClass` value for [Contravariant][].
+  //.
+  //. ```javascript
+  //. > Contravariant.test(Math.sqrt)
+  //. true
+  //.
+  //. > Contravariant.test([])
+  //. false
+  //. ```
+  var Contravariant = $('Contravariant', [], {contramap: Value});
+
+  //  Null$prototype$toString :: Null ~> () -> String
+  function Null$prototype$toString() {
+    return 'null';
+  }
+
+  //  Null$prototype$equals :: Null ~> Null -> Boolean
+  function Null$prototype$equals(other) {
+    return true;
+  }
+
+  //  Null$prototype$lte :: Null ~> Null -> Boolean
+  function Null$prototype$lte(other) {
+    return true;
+  }
+
+  //  Undefined$prototype$toString :: Undefined ~> () -> String
+  function Undefined$prototype$toString() {
+    return 'undefined';
+  }
+
+  //  Undefined$prototype$equals :: Undefined ~> Undefined -> Boolean
+  function Undefined$prototype$equals(other) {
+    return true;
+  }
+
+  //  Undefined$prototype$lte :: Undefined ~> Undefined -> Boolean
+  function Undefined$prototype$lte(other) {
+    return true;
+  }
+
+  //  Boolean$prototype$toString :: Boolean ~> () -> String
+  function Boolean$prototype$toString() {
+    return typeof this === 'object' ?
+      'new Boolean(' + toString(this.valueOf()) + ')' :
+      this.toString();
+  }
+
+  //  Boolean$prototype$equals :: Boolean ~> Boolean -> Boolean
+  function Boolean$prototype$equals(other) {
+    return typeof this === 'object' ?
+      equals(this.valueOf(), other.valueOf()) :
+      this === other;
+  }
+
+  //  Boolean$prototype$lte :: Boolean ~> Boolean -> Boolean
+  function Boolean$prototype$lte(other) {
+    return typeof this === 'object' ?
+      lte(this.valueOf(), other.valueOf()) :
+      this === false || other === true;
+  }
+
+  //  Number$prototype$toString :: Number ~> () -> String
+  function Number$prototype$toString() {
+    return typeof this === 'object' ?
+      'new Number(' + toString(this.valueOf()) + ')' :
+      1 / this === -Infinity ? '-0' : this.toString(10);
+  }
+
+  //  Number$prototype$equals :: Number ~> Number -> Boolean
+  function Number$prototype$equals(other) {
+    return typeof this === 'object' ?
+      equals(this.valueOf(), other.valueOf()) :
+      isNaN(this) && isNaN(other) || this === other;
+  }
+
+  //  Number$prototype$lte :: Number ~> Number -> Boolean
+  function Number$prototype$lte(other) {
+    return typeof this === 'object' ?
+      lte(this.valueOf(), other.valueOf()) :
+      isNaN(this) && isNaN(other) || this <= other;
+  }
+
+  //  Date$prototype$toString :: Date ~> () -> String
+  function Date$prototype$toString() {
+    var x = isNaN(this.valueOf()) ? NaN : this.toISOString();
+    return 'new Date(' + toString(x) + ')';
+  }
+
+  //  Date$prototype$equals :: Date ~> Date -> Boolean
+  function Date$prototype$equals(other) {
+    return equals(this.valueOf(), other.valueOf());
+  }
+
+  //  Date$prototype$lte :: Date ~> Date -> Boolean
+  function Date$prototype$lte(other) {
+    return lte(this.valueOf(), other.valueOf());
+  }
+
+  //  RegExp$prototype$equals :: RegExp ~> RegExp -> Boolean
+  function RegExp$prototype$equals(other) {
+    return other.source === this.source &&
+           other.global === this.global &&
+           other.ignoreCase === this.ignoreCase &&
+           other.multiline === this.multiline &&
+           other.sticky === this.sticky &&
+           other.unicode === this.unicode;
+  }
+
+  //  String$empty :: () -> String
+  function String$empty() {
+    return '';
+  }
+
+  //  String$prototype$toString :: String ~> () -> String
+  function String$prototype$toString() {
+    return typeof this === 'object' ?
+      'new String(' + toString(this.valueOf()) + ')' :
+      '"' + this.replace(/\\/g, '\\\\')
+                .replace(/[\b]/g, '\\b')  // \b matches word boundary;
+                .replace(/\f/g, '\\f')    // [\b] matches backspace
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r')
+                .replace(/\t/g, '\\t')
+                .replace(/\v/g, '\\v')
+                .replace(/\0/g, '\\0')
+                .replace(/"/g, '\\"') + '"';
+  }
+
+  //  String$prototype$equals :: String ~> String -> Boolean
+  function String$prototype$equals(other) {
+    return typeof this === 'object' ?
+      equals(this.valueOf(), other.valueOf()) :
+      this === other;
+  }
+
+  //  String$prototype$lte :: String ~> String -> Boolean
+  function String$prototype$lte(other) {
+    return typeof this === 'object' ?
+      lte(this.valueOf(), other.valueOf()) :
+      this <= other;
+  }
+
+  //  String$prototype$concat :: String ~> String -> String
+  function String$prototype$concat(other) {
+    return this + other;
+  }
+
+  //  Array$empty :: () -> Array a
+  function Array$empty() {
+    return [];
+  }
+
+  //  Array$of :: a -> Array a
+  function Array$of(x) {
+    return [x];
+  }
+
+  //  Array$chainRec :: ((a -> c, b -> c, a) -> Array c, a) -> Array b
+  function Array$chainRec(f, x) {
+    var $todo = [x];
+    var $done = [];
+    while ($todo.length > 0) {
+      var xs = f(iterationNext, iterationDone, $todo.shift());
+      var $more = [];
+      for (var idx = 0; idx < xs.length; idx += 1) {
+        (xs[idx].done ? $done : $more).push(xs[idx].value);
+      }
+      Array.prototype.unshift.apply($todo, $more);
+    }
+    return $done;
+  }
+
+  //  Array$zero :: () -> Array a
+  function Array$zero() {
+    return [];
+  }
+
+  //  Array$prototype$toString :: Array a ~> () -> String
+  function Array$prototype$toString() {
+    var reprs = this.map(toString);
+    var keys = Object.keys(this).sort();
+    for (var idx = 0; idx < keys.length; idx += 1) {
+      var k = keys[idx];
+      if (!/^\d+$/.test(k)) {
+        reprs.push(toString(k) + ': ' + toString(this[k]));
+      }
+    }
+    return '[' + reprs.join(', ') + ']';
+  }
+
+  //  Array$prototype$equals :: Array a ~> Array a -> Boolean
+  function Array$prototype$equals(other) {
+    if (other.length !== this.length) return false;
+    for (var idx = 0; idx < this.length; idx += 1) {
+      if (!equals(this[idx], other[idx])) return false;
+    }
+    return true;
+  }
+
+  //  Array$prototype$lte :: Array a ~> Array a -> Boolean
+  function Array$prototype$lte(other) {
+    for (var idx = 0; true; idx += 1) {
+      if (idx === this.length) return true;
+      if (idx === other.length) return false;
+      if (!equals(this[idx], other[idx])) return lte(this[idx], other[idx]);
+    }
+  }
+
+  //  Array$prototype$concat :: Array a ~> Array a -> Array a
+  function Array$prototype$concat(other) {
+    return this.concat(other);
+  }
+
+  //  Array$prototype$map :: Array a ~> (a -> b) -> Array b
+  function Array$prototype$map(f) {
+    return this.map(function(x) { return f(x); });
+  }
+
+  //  Array$prototype$ap :: Array a ~> Array (a -> b) -> Array b
+  function Array$prototype$ap(fs) {
+    var result = [];
+    for (var idx = 0; idx < fs.length; idx += 1) {
+      for (var idx2 = 0; idx2 < this.length; idx2 += 1) {
+        result.push(fs[idx](this[idx2]));
+      }
+    }
+    return result;
+  }
+
+  //  Array$prototype$chain :: Array a ~> (a -> Array b) -> Array b
+  function Array$prototype$chain(f) {
+    var result = [];
+    this.forEach(function(x) { Array.prototype.push.apply(result, f(x)); });
+    return result;
+  }
+
+  //  Array$prototype$alt :: Array a ~> Array a -> Array a
+  var Array$prototype$alt = Array$prototype$concat;
+
+  //  Array$prototype$reduce :: Array a ~> ((b, a) -> b, b) -> b
+  function Array$prototype$reduce(f, initial) {
+    return this.reduce(function(acc, x) { return f(acc, x); }, initial);
+  }
+
+  //  Array$prototype$traverse :: Applicative f => Array a ~> (TypeRep f, a -> f b) -> f (Array b)
+  function Array$prototype$traverse(typeRep, f) {
+    var xs = this;
+    function go(idx, n) {
+      switch (n) {
+        case 0: return of(typeRep, []);
+        case 2: return lift2(pair, f(xs[idx]), f(xs[idx + 1]));
+        default:
+          var m = Math.floor(n / 4) * 2;
+          return lift2(concat_, go(idx, m), go(idx + m, n - m));
+      }
+    }
+    return this.length % 2 === 1 ?
+      lift2(concat_, map(Array$of, f(this[0])), go(1, this.length - 1)) :
+      go(0, this.length);
+  }
+
+  //  Array$prototype$extend :: Array a ~> (Array a -> b) -> Array b
+  function Array$prototype$extend(f) {
+    return [f(this)];
+  }
+
+  //  Arguments$prototype$toString :: Arguments ~> String
+  function Arguments$prototype$toString() {
+    var args = Array.prototype.map.call(this, toString).join(', ');
+    return '(function () { return arguments; }(' + args + '))';
+  }
+
+  //  Arguments$prototype$equals :: Arguments ~> Arguments -> Boolean
+  function Arguments$prototype$equals(other) {
+    return Array$prototype$equals.call(this, other);
+  }
+
+  //  Arguments$prototype$lte :: Arguments ~> Arguments -> Boolean
+  function Arguments$prototype$lte(other) {
+    return Array$prototype$lte.call(this, other);
+  }
+
+  //  Error$prototype$toString :: Error ~> () -> String
+  function Error$prototype$toString() {
+    return 'new ' + this.name + '(' + toString(this.message) + ')';
+  }
+
+  //  Error$prototype$equals :: Error ~> Error -> Boolean
+  function Error$prototype$equals(other) {
+    return equals(this.name, other.name) &&
+           equals(this.message, other.message);
+  }
+
+  //  Object$empty :: () -> StrMap a
+  function Object$empty() {
+    return {};
+  }
+
+  //  Object$zero :: () -> StrMap a
+  function Object$zero() {
+    return {};
+  }
+
+  //  Object$prototype$toString :: StrMap a ~> () -> String
+  function Object$prototype$toString() {
+    var reprs = [];
+    var keys = Object.keys(this).sort();
+    for (var idx = 0; idx < keys.length; idx += 1) {
+      var k = keys[idx];
+      reprs.push(toString(k) + ': ' + toString(this[k]));
+    }
+    return '{' + reprs.join(', ') + '}';
+  }
+
+  //  Object$prototype$equals :: StrMap a ~> StrMap a -> Boolean
+  function Object$prototype$equals(other) {
+    var self = this;
+    var keys = Object.keys(this).sort();
+    return equals(keys, Object.keys(other).sort()) &&
+           keys.every(function(k) { return equals(self[k], other[k]); });
+  }
+
+  //  Object$prototype$lte :: StrMap a ~> StrMap a -> Boolean
+  function Object$prototype$lte(other) {
+    var theseKeys = Object.keys(this).sort();
+    var otherKeys = Object.keys(other).sort();
+    while (true) {
+      if (theseKeys.length === 0) return true;
+      if (otherKeys.length === 0) return false;
+      var k = theseKeys.shift();
+      var z = otherKeys.shift();
+      if (k < z) return true;
+      if (k > z) return false;
+      if (!equals(this[k], other[k])) return lte(this[k], other[k]);
+    }
+  }
+
+  //  Object$prototype$concat :: StrMap a ~> StrMap a -> StrMap a
+  function Object$prototype$concat(other) {
+    var result = {};
+    for (var k in this) result[k] = this[k];
+    for (k in other) result[k] = other[k];
+    return result;
+  }
+
+  //  Object$prototype$map :: StrMap a ~> (a -> b) -> StrMap b
+  function Object$prototype$map(f) {
+    var result = {};
+    for (var k in this) result[k] = f(this[k]);
+    return result;
+  }
+
+  //  Object$prototype$ap :: StrMap a ~> StrMap (a -> b) -> StrMap b
+  function Object$prototype$ap(other) {
+    var result = {};
+    for (var k in this) if (k in other) result[k] = other[k](this[k]);
+    return result;
+  }
+
+  //  Object$prototype$alt :: StrMap a ~> StrMap a -> StrMap a
+  var Object$prototype$alt = Object$prototype$concat;
+
+  //  Object$prototype$reduce :: StrMap a ~> ((b, a) -> b, b) -> b
+  function Object$prototype$reduce(f, initial) {
+    var self = this;
+    function reducer(acc, k) { return f(acc, self[k]); }
+    return Object.keys(this).sort().reduce(reducer, initial);
+  }
+
+  //  Object$prototype$traverse :: Applicative f => StrMap a ~> (TypeRep f, a -> f b) -> f (StrMap b)
+  function Object$prototype$traverse(typeRep, f) {
+    var self = this;
+    return Object.keys(this).reduce(function(applicative, k) {
+      function set(o) { return function(v) { o[k] = v; return o; }; }
+      return lift2(set, applicative, f(self[k]));
+    }, of(typeRep, {}));
+  }
+
+  //  Function$of :: b -> (a -> b)
+  function Function$of(x) {
+    return function(_) { return x; };
+  }
+
+  //  Function$chainRec :: ((a -> c, b -> c, a) -> (z -> c), a) -> (z -> b)
+  function Function$chainRec(f, x) {
+    return function(a) {
+      var step = iterationNext(x);
+      while (!step.done) {
+        step = f(iterationNext, iterationDone, step.value)(a);
+      }
+      return step.value;
+    };
+  }
+
+  //  Function$prototype$equals :: Function ~> Function -> Boolean
+  function Function$prototype$equals(other) {
+    return other === this;
+  }
+
+  //  Function$prototype$map :: (a -> b) ~> (b -> c) -> (a -> c)
+  function Function$prototype$map(f) {
+    var functor = this;
+    return function(x) { return f(functor(x)); };
+  }
+
+  //  Function$prototype$promap :: (b -> c) ~> (a -> b, c -> d) -> (a -> d)
+  function Function$prototype$promap(f, g) {
+    var profunctor = this;
+    return function(x) { return g(profunctor(f(x))); };
+  }
+
+  //  Function$prototype$ap :: (a -> b) ~> (a -> b -> c) -> (a -> c)
+  function Function$prototype$ap(f) {
+    var apply = this;
+    return function(x) { return f(x)(apply(x)); };
+  }
+
+  //  Function$prototype$chain :: (a -> b) ~> (b -> a -> c) -> (a -> c)
+  function Function$prototype$chain(f) {
+    var chain = this;
+    return function(x) { return f(chain(x))(x); };
+  }
+
+  //  Function$prototype$contramap :: (b -> c) ~> (a -> b) -> (a -> c)
+  function Function$prototype$contramap(f) {
+    var contravariant = this;
+    return function(x) { return contravariant(f(x)); };
+  }
+
+  /* eslint-disable key-spacing */
+  var implementations = {
+    Null: {
+      prototype: {
+        toString:                   Null$prototype$toString,
+        'fantasy-land/equals':      Null$prototype$equals,
+        'fantasy-land/lte':         Null$prototype$lte
+      }
+    },
+    Undefined: {
+      prototype: {
+        toString:                   Undefined$prototype$toString,
+        'fantasy-land/equals':      Undefined$prototype$equals,
+        'fantasy-land/lte':         Undefined$prototype$lte
+      }
+    },
+    Boolean: {
+      prototype: {
+        toString:                   Boolean$prototype$toString,
+        'fantasy-land/equals':      Boolean$prototype$equals,
+        'fantasy-land/lte':         Boolean$prototype$lte
+      }
+    },
+    Number: {
+      prototype: {
+        toString:                   Number$prototype$toString,
+        'fantasy-land/equals':      Number$prototype$equals,
+        'fantasy-land/lte':         Number$prototype$lte
+      }
+    },
+    Date: {
+      prototype: {
+        toString:                   Date$prototype$toString,
+        'fantasy-land/equals':      Date$prototype$equals,
+        'fantasy-land/lte':         Date$prototype$lte
+      }
+    },
+    RegExp: {
+      prototype: {
+        'fantasy-land/equals':      RegExp$prototype$equals
+      }
+    },
+    String: {
+      'fantasy-land/empty':         String$empty,
+      prototype: {
+        toString:                   String$prototype$toString,
+        'fantasy-land/equals':      String$prototype$equals,
+        'fantasy-land/lte':         String$prototype$lte,
+        'fantasy-land/concat':      String$prototype$concat
+      }
+    },
+    Array: {
+      'fantasy-land/empty':         Array$empty,
+      'fantasy-land/of':            Array$of,
+      'fantasy-land/chainRec':      Array$chainRec,
+      'fantasy-land/zero':          Array$zero,
+      prototype: {
+        toString:                   Array$prototype$toString,
+        'fantasy-land/equals':      Array$prototype$equals,
+        'fantasy-land/lte':         Array$prototype$lte,
+        'fantasy-land/concat':      Array$prototype$concat,
+        'fantasy-land/map':         Array$prototype$map,
+        'fantasy-land/ap':          Array$prototype$ap,
+        'fantasy-land/chain':       Array$prototype$chain,
+        'fantasy-land/alt':         Array$prototype$alt,
+        'fantasy-land/reduce':      Array$prototype$reduce,
+        'fantasy-land/traverse':    Array$prototype$traverse,
+        'fantasy-land/extend':      Array$prototype$extend
+      }
+    },
+    Arguments: {
+      prototype: {
+        toString:                   Arguments$prototype$toString,
+        'fantasy-land/equals':      Arguments$prototype$equals,
+        'fantasy-land/lte':         Arguments$prototype$lte
+      }
+    },
+    Error: {
+      prototype: {
+        toString:                   Error$prototype$toString,
+        'fantasy-land/equals':      Error$prototype$equals
+      }
+    },
+    Object: {
+      'fantasy-land/empty':         Object$empty,
+      'fantasy-land/zero':          Object$zero,
+      prototype: {
+        toString:                   Object$prototype$toString,
+        'fantasy-land/equals':      Object$prototype$equals,
+        'fantasy-land/lte':         Object$prototype$lte,
+        'fantasy-land/concat':      Object$prototype$concat,
+        'fantasy-land/map':         Object$prototype$map,
+        'fantasy-land/ap':          Object$prototype$ap,
+        'fantasy-land/alt':         Object$prototype$alt,
+        'fantasy-land/reduce':      Object$prototype$reduce,
+        'fantasy-land/traverse':    Object$prototype$traverse
+      }
+    },
+    Function: {
+      'fantasy-land/of':            Function$of,
+      'fantasy-land/chainRec':      Function$chainRec,
+      prototype: {
+        'fantasy-land/equals':      Function$prototype$equals,
+        'fantasy-land/map':         Function$prototype$map,
+        'fantasy-land/promap':      Function$prototype$promap,
+        'fantasy-land/ap':          Function$prototype$ap,
+        'fantasy-land/chain':       Function$prototype$chain,
+        'fantasy-land/contramap':   Function$prototype$contramap
+      }
+    }
+  };
+  /* eslint-enable key-spacing */
+
+  //# toString :: a -> String
+  //.
+  //. Returns a useful string representation of its argument.
+  //.
+  //. Dispatches to the argument's `toString` method if appropriate.
+  //.
+  //. Where practical, `equals(eval(toString(x)), x) = true`.
+  //.
+  //. `toString` implementations are provided for the following built-in types:
+  //. Null, Undefined, Boolean, Number, Date, String, Array, Arguments, Error,
+  //. and Object.
+  //.
+  //. ```javascript
+  //. > toString(-0)
+  //. '-0'
+  //.
+  //. > toString(['foo', 'bar', 'baz'])
+  //. '["foo", "bar", "baz"]'
+  //.
+  //. > toString({x: 1, y: 2, z: 3})
+  //. '{"x": 1, "y": 2, "z": 3}'
+  //.
+  //. > toString(Cons(1, Cons(2, Cons(3, Nil))))
+  //. 'Cons(1, Cons(2, Cons(3, Nil)))'
+  //. ```
+  var toString = (function() {
+    //  $seen :: Array Any
+    var $seen = [];
+
+    function call(method, x) {
+      $seen.push(x);
+      try { return method.call(x); } finally { $seen.pop(); }
+    }
+
+    return function toString(x) {
+      if ($seen.indexOf(x) >= 0) return '<Circular>';
+
+      var xType = type(x);
+      if (xType === 'Object') {
+        var result;
+        try { result = call(x.toString, x); } catch (err) {}
+        if (result != null && result !== '[object Object]') return result;
+      }
+
+      return call(implPath([xType, 'prototype', 'toString']) || x.toString, x);
+    };
+  }());
+
+  //# equals :: (a, b) -> Boolean
+  //.
+  //. Returns `true` if its arguments are of the same type and equal according
+  //. to the type's [`fantasy-land/equals`][] method; `false` otherwise.
+  //.
+  //. `fantasy-land/equals` implementations are provided for the following
+  //. built-in types: Null, Undefined, Boolean, Number, Date, RegExp, String,
+  //. Array, Arguments, Error, Object, and Function.
+  //.
+  //. The algorithm supports circular data structures. Two arrays are equal
+  //. if they have the same index paths and for each path have equal values.
+  //. Two arrays which represent `[1, [1, [1, [1, [1, ...]]]]]`, for example,
+  //. are equal even if their internal structures differ. Two objects are equal
+  //. if they have the same property paths and for each path have equal values.
+  //.
+  //. ```javascript
+  //. > equals(0, -0)
+  //. true
+  //.
+  //. > equals(NaN, NaN)
+  //. true
+  //.
+  //. > equals(Cons('foo', Cons('bar', Nil)), Cons('foo', Cons('bar', Nil)))
+  //. true
+  //.
+  //. > equals(Cons('foo', Cons('bar', Nil)), Cons('bar', Cons('foo', Nil)))
+  //. false
+  //. ```
+  var equals = (function() {
+    //  $pairs :: Array (Pair Any Any)
+    var $pairs = [];
+
+    return function equals(x, y) {
+      if (!sameType(x, y)) return false;
+
+      //  This algorithm for comparing circular data structures was
+      //  suggested in <http://stackoverflow.com/a/40622794/312785>.
+      if ($pairs.some(function(p) { return p[0] === x && p[1] === y; })) {
+        return true;
+      }
+
+      $pairs.push([x, y]);
+      try {
+        return Setoid.test(x) && Setoid.test(y) && Setoid.methods.equals(x)(y);
+      } finally {
+        $pairs.pop();
+      }
+    };
+  }());
+
+  //# lt :: (a, b) -> Boolean
+  //.
+  //. Returns `true` if its arguments are of the same type and the first is
+  //. less than the second according to the type's [`fantasy-land/lte`][]
+  //. method; `false` otherwise.
+  //.
+  //. This function is derived from [`lte`](#lte).
+  //.
+  //. See also [`gt`](#gt) and [`gte`](#gte).
+  //.
+  //. ```javascript
+  //. > lt(0, 0)
+  //. false
+  //.
+  //. > lt(0, 1)
+  //. true
+  //.
+  //. > lt(1, 0)
+  //. false
+  //. ```
+  function lt(x, y) {
+    return sameType(x, y) && !lte(y, x);
+  }
+
+  //# lte :: (a, b) -> Boolean
+  //.
+  //. Returns `true` if its arguments are of the same type and the first
+  //. is less than or equal to the second according to the type's
+  //. [`fantasy-land/lte`][] method; `false` otherwise.
+  //.
+  //. `fantasy-land/lte` implementations are provided for the following
+  //. built-in types: Null, Undefined, Boolean, Number, Date, String, Array,
+  //. Arguments, and Object.
+  //.
+  //. The algorithm supports circular data structures in the same manner as
+  //. [`equals`](#equals).
+  //.
+  //. See also [`lt`](#lt), [`gt`](#gt), and [`gte`](#gte).
+  //.
+  //. ```javascript
+  //. > lte(0, 0)
+  //. true
+  //.
+  //. > lte(0, 1)
+  //. true
+  //.
+  //. > lte(1, 0)
+  //. false
+  //. ```
+  var lte = (function() {
+    //  $pairs :: Array (Pair Any Any)
+    var $pairs = [];
+
+    return function lte(x, y) {
+      if (!sameType(x, y)) return false;
+
+      //  This algorithm for comparing circular data structures was
+      //  suggested in <http://stackoverflow.com/a/40622794/312785>.
+      if ($pairs.some(function(p) { return p[0] === x && p[1] === y; })) {
+        return equals(x, y);
+      }
+
+      $pairs.push([x, y]);
+      try {
+        return Ord.test(x) && Ord.test(y) && Ord.methods.lte(x)(y);
+      } finally {
+        $pairs.pop();
+      }
+    };
+  }());
+
+  //# gt :: (a, b) -> Boolean
+  //.
+  //. Returns `true` if its arguments are of the same type and the first is
+  //. greater than the second according to the type's [`fantasy-land/lte`][]
+  //. method; `false` otherwise.
+  //.
+  //. This function is derived from [`lte`](#lte).
+  //.
+  //. See also [`lt`](#lt) and [`gte`](#gte).
+  //.
+  //. ```javascript
+  //. > gt(0, 0)
+  //. false
+  //.
+  //. > gt(0, 1)
+  //. false
+  //.
+  //. > gt(1, 0)
+  //. true
+  //. ```
+  function gt(x, y) {
+    return lt(y, x);
+  }
+
+  //# gte :: (a, b) -> Boolean
+  //.
+  //. Returns `true` if its arguments are of the same type and the first
+  //. is greater than or equal to the second according to the type's
+  //. [`fantasy-land/lte`][] method; `false` otherwise.
+  //.
+  //. This function is derived from [`lte`](#lte).
+  //.
+  //. See also [`lt`](#lt) and [`gt`](#gt).
+  //.
+  //. ```javascript
+  //. > gte(0, 0)
+  //. true
+  //.
+  //. > gte(0, 1)
+  //. false
+  //.
+  //. > gte(1, 0)
+  //. true
+  //. ```
+  function gte(x, y) {
+    return lte(y, x);
+  }
+
+  //# concat :: Semigroup a => (a, a) -> a
+  //.
+  //. Function wrapper for [`fantasy-land/concat`][].
+  //.
+  //. `fantasy-land/concat` implementations are provided for the following
+  //. built-in types: String, Array, and Object.
+  //.
+  //. ```javascript
+  //. > concat('abc', 'def')
+  //. 'abcdef'
+  //.
+  //. > concat([1, 2, 3], [4, 5, 6])
+  //. [1, 2, 3, 4, 5, 6]
+  //.
+  //. > concat({x: 1, y: 2}, {y: 3, z: 4})
+  //. {x: 1, y: 3, z: 4}
+  //.
+  //. > concat(Cons('foo', Cons('bar', Cons('baz', Nil))), Cons('quux', Nil))
+  //. Cons('foo', Cons('bar', Cons('baz', Cons('quux', Nil))))
+  //. ```
+  function concat(x, y) {
+    return Semigroup.methods.concat(x)(y);
+  }
+
+  //# empty :: Monoid m => TypeRep m -> m
+  //.
+  //. Function wrapper for [`fantasy-land/empty`][].
+  //.
+  //. `fantasy-land/empty` implementations are provided for the following
+  //. built-in types: String, Array, and Object.
+  //.
+  //. ```javascript
+  //. > empty(String)
+  //. ''
+  //.
+  //. > empty(Array)
+  //. []
+  //.
+  //. > empty(Object)
+  //. {}
+  //.
+  //. > empty(List)
+  //. Nil
+  //. ```
+  function empty(typeRep) {
+    return Monoid.methods.empty(typeRep)();
+  }
+
+  //# map :: Functor f => (a -> b, f a) -> f b
+  //.
+  //. Function wrapper for [`fantasy-land/map`][].
+  //.
+  //. `fantasy-land/map` implementations are provided for the following
+  //. built-in types: Array, Object, and Function.
+  //.
+  //. ```javascript
+  //. > map(Math.sqrt, [1, 4, 9])
+  //. [1, 2, 3]
+  //.
+  //. > map(Math.sqrt, {x: 1, y: 4, z: 9})
+  //. {x: 1, y: 2, z: 3}
+  //.
+  //. > map(Math.sqrt, s => s.length)('Sanctuary')
+  //. 3
+  //.
+  //. > map(Math.sqrt, Tuple('foo', 64))
+  //. Tuple('foo', 8)
+  //.
+  //. > map(Math.sqrt, Nil)
+  //. Nil
+  //.
+  //. > map(Math.sqrt, Cons(1, Cons(4, Cons(9, Nil))))
+  //. Cons(1, Cons(2, Cons(3, Nil)))
+  //. ```
+  function map(f, functor) {
+    return Functor.methods.map(functor)(f);
+  }
+
+  //# bimap :: Bifunctor f => (a -> b, c -> d, f a c) -> f b d
+  //.
+  //. Function wrapper for [`fantasy-land/bimap`][].
+  //.
+  //. ```javascript
+  //. > bimap(s => s.toUpperCase(), Math.sqrt, Tuple('foo', 64))
+  //. Tuple('FOO', 8)
+  //. ```
+  function bimap(f, g, bifunctor) {
+    return Bifunctor.methods.bimap(bifunctor)(f, g);
+  }
+
+  //# promap :: Profunctor p => (a -> b, c -> d, p b c) -> p a d
+  //.
+  //. Function wrapper for [`fantasy-land/promap`][].
+  //.
+  //. `fantasy-land/promap` implementations are provided for the following
+  //. built-in types: Function.
+  //.
+  //. ```javascript
+  //. > promap(Math.abs, x => x + 1, Math.sqrt)(-100)
+  //. 11
+  //. ```
+  function promap(f, g, profunctor) {
+    return Profunctor.methods.promap(profunctor)(f, g);
+  }
+
+  //# ap :: Apply f => (f (a -> b), f a) -> f b
+  //.
+  //. Function wrapper for [`fantasy-land/ap`][].
+  //.
+  //. `fantasy-land/ap` implementations are provided for the following
+  //. built-in types: Array, Object, and Function.
+  //.
+  //. ```javascript
+  //. > ap([Math.sqrt, x => x * x], [1, 4, 9, 16, 25])
+  //. [1, 2, 3, 4, 5, 1, 16, 81, 256, 625]
+  //.
+  //. > ap({a: Math.sqrt, b: x => x * x}, {a: 16, b: 10, c: 1})
+  //. {a: 4, b: 100}
+  //.
+  //. > ap(s => n => s.slice(0, n), s => Math.ceil(s.length / 2))('Haskell')
+  //. 'Hask'
+  //.
+  //. > ap(Identity(Math.sqrt), Identity(64))
+  //. Identity(8)
+  //.
+  //. > ap(Cons(Math.sqrt, Cons(x => x * x, Nil)), Cons(16, Cons(100, Nil)))
+  //. Cons(4, Cons(10, Cons(256, Cons(10000, Nil))))
+  //. ```
+  function ap(applyF, applyX) {
+    return Apply.methods.ap(applyX)(applyF);
+  }
+
+  //# lift2 :: Apply f => (a -> b -> c, f a, f b) -> f c
+  //.
+  //. Lifts `a -> b -> c` to `Apply f => f a -> f b -> f c` and returns the
+  //. result of applying this to the given arguments.
+  //.
+  //. This function is derived from [`map`](#map) and [`ap`](#ap).
+  //.
+  //. See also [`lift3`](#lift3).
+  //.
+  //. ```javascript
+  //. > lift2(x => y => Math.pow(x, y), [10], [1, 2, 3])
+  //. [10, 100, 1000]
+  //.
+  //. > lift2(x => y => Math.pow(x, y), Identity(10), Identity(3))
+  //. Identity(1000)
+  //. ```
+  function lift2(f, x, y) {
+    return ap(map(f, x), y);
+  }
+
+  //# lift3 :: Apply f => (a -> b -> c -> d, f a, f b, f c) -> f d
+  //.
+  //. Lifts `a -> b -> c -> d` to `Apply f => f a -> f b -> f c -> f d` and
+  //. returns the result of applying this to the given arguments.
+  //.
+  //. This function is derived from [`map`](#map) and [`ap`](#ap).
+  //.
+  //. See also [`lift2`](#lift2).
+  //.
+  //. ```javascript
+  //. > lift3(x => y => z => x + z + y, ['<'], ['>'], ['foo', 'bar', 'baz'])
+  //. ['<foo>', '<bar>', '<baz>']
+  //.
+  //. > lift3(x => y => z => x + z + y, Identity('<'), Identity('>'), Identity('baz'))
+  //. Identity('<baz>')
+  //. ```
+  function lift3(f, x, y, z) {
+    return ap(ap(map(f, x), y), z);
+  }
+
+  //# apFirst :: Apply f => (f a, f b) -> f a
+  //.
+  //. Combines two effectful actions, keeping only the result of the first.
+  //. Equivalent to Haskell's `(<*)` function.
+  //.
+  //. This function is derived from [`lift2`](#lift2).
+  //.
+  //. See also [`apSecond`](#apSecond).
+  //.
+  //. ```javascript
+  //. > apFirst([1, 2], [3, 4])
+  //. [1, 1, 2, 2]
+  //.
+  //. > apFirst(Identity(1), Identity(2))
+  //. Identity(1)
+  //. ```
+  function apFirst(x, y) {
+    return lift2(constant, x, y);
+  }
+
+  //# apSecond :: Apply f => (f a, f b) -> f b
+  //.
+  //. Combines two effectful actions, keeping only the result of the second.
+  //. Equivalent to Haskell's `(*>)` function.
+  //.
+  //. This function is derived from [`lift2`](#lift2).
+  //.
+  //. See also [`apFirst`](#apFirst).
+  //.
+  //. ```javascript
+  //. > apSecond([1, 2], [3, 4])
+  //. [3, 4, 3, 4]
+  //.
+  //. > apSecond(Identity(1), Identity(2))
+  //. Identity(2)
+  //. ```
+  function apSecond(x, y) {
+    return lift2(constant(identity), x, y);
+  }
+
+  //# of :: Applicative f => (TypeRep f, a) -> f a
+  //.
+  //. Function wrapper for [`fantasy-land/of`][].
+  //.
+  //. `fantasy-land/of` implementations are provided for the following
+  //. built-in types: Array and Function.
+  //.
+  //. ```javascript
+  //. > of(Array, 42)
+  //. [42]
+  //.
+  //. > of(Function, 42)(null)
+  //. 42
+  //.
+  //. > of(List, 42)
+  //. Cons(42, Nil)
+  //. ```
+  function of(typeRep, x) {
+    return Applicative.methods.of(typeRep)(x);
+  }
+
+  //# chain :: Chain m => (a -> m b, m a) -> m b
+  //.
+  //. Function wrapper for [`fantasy-land/chain`][].
+  //.
+  //. `fantasy-land/chain` implementations are provided for the following
+  //. built-in types: Array and Function.
+  //.
+  //. ```javascript
+  //. > chain(x => [x, x], [1, 2, 3])
+  //. [1, 1, 2, 2, 3, 3]
+  //.
+  //. > chain(x => x % 2 == 1 ? of(List, x) : Nil, Cons(1, Cons(2, Cons(3, Nil))))
+  //. Cons(1, Cons(3, Nil))
+  //.
+  //. > chain(n => s => s.slice(0, n), s => Math.ceil(s.length / 2))('Haskell')
+  //. 'Hask'
+  //. ```
+  function chain(f, chain_) {
+    return Chain.methods.chain(chain_)(f);
+  }
+
+  //# join :: Chain m => m (m a) -> m a
+  //.
+  //. Removes one level of nesting from a nested monadic structure.
+  //.
+  //. This function is derived from [`chain`](#chain).
+  //.
+  //. ```javascript
+  //. > join([[1], [2], [3]])
+  //. [1, 2, 3]
+  //.
+  //. > join([[[1, 2, 3]]])
+  //. [[1, 2, 3]]
+  //.
+  //. > join(Identity(Identity(1)))
+  //. Identity(1)
+  //. ```
+  function join(chain_) {
+    return chain(identity, chain_);
+  }
+
+  //# chainRec :: ChainRec m => (TypeRep m, (a -> c, b -> c, a) -> m c, a) -> m b
+  //.
+  //. Function wrapper for [`fantasy-land/chainRec`][].
+  //.
+  //. `fantasy-land/chainRec` implementations are provided for the following
+  //. built-in types: Array.
+  //.
+  //. ```javascript
+  //. > chainRec(
+  //. .   Array,
+  //. .   (next, done, s) => s.length == 2 ? [s + '!', s + '?'].map(done)
+  //. .                                    : [s + 'o', s + 'n'].map(next),
+  //. .   ''
+  //. . )
+  //. ['oo!', 'oo?', 'on!', 'on?', 'no!', 'no?', 'nn!', 'nn?']
+  //. ```
+  function chainRec(typeRep, f, x) {
+    return ChainRec.methods.chainRec(typeRep)(f, x);
+  }
+
+  //# filter :: (Applicative f, Foldable f, Monoid (f a)) => (a -> Boolean, f a) -> f a
+  //.
+  //. Filters its second argument in accordance with the given predicate.
+  //.
+  //. This function is derived from [`concat`](#concat), [`empty`](#empty),
+  //. [`of`](#of), and [`reduce`](#reduce).
+  //.
+  //. See also [`filterM`](#filterM).
+  //.
+  //. ```javascript
+  //. > filter(x => x % 2 == 1, [1, 2, 3])
+  //. [1, 3]
+  //.
+  //. > filter(x => x % 2 == 1, Cons(1, Cons(2, Cons(3, Nil))))
+  //. Cons(1, Cons(3, Nil))
+  //. ```
+  function filter(pred, m) {
+    var M = m.constructor;
+    return reduce(function(m, x) { return pred(x) ? concat(m, of(M, x)) : m; },
+                  empty(M),
+                  m);
+  }
+
+  //# filterM :: (Alternative m, Monad m) => (a -> Boolean, m a) -> m a
+  //.
+  //. Filters its second argument in accordance with the given predicate.
+  //.
+  //. This function is derived from [`of`](#of), [`chain`](#chain), and
+  //. [`zero`](#zero).
+  //.
+  //. See also [`filter`](#filter).
+  //.
+  //. ```javascript
+  //. > filterM(x => x % 2 == 1, [1, 2, 3])
+  //. [1, 3]
+  //.
+  //. > filterM(x => x % 2 == 1, Cons(1, Cons(2, Cons(3, Nil))))
+  //. Cons(1, Cons(3, Nil))
+  //.
+  //. > filterM(x => x % 2 == 1, Nothing)
+  //. Nothing
+  //.
+  //. > filterM(x => x % 2 == 1, Just(0))
+  //. Nothing
+  //.
+  //. > filterM(x => x % 2 == 1, Just(1))
+  //. Just(1)
+  //. ```
+  function filterM(pred, m) {
+    var M = m.constructor;
+    var z = zero(M);
+    return chain(function(x) { return pred(x) ? of(M, x) : z; }, m);
+  }
+
+  //# alt :: Alt f => (f a, f a) -> f a
+  //.
+  //. Function wrapper for [`fantasy-land/alt`][].
+  //.
+  //. `fantasy-land/alt` implementations are provided for the following
+  //. built-in types: Array and Object.
+  //.
+  //. ```javascript
+  //. > alt([1, 2, 3], [4, 5, 6])
+  //. [1, 2, 3, 4, 5, 6]
+  //.
+  //. > alt(Nothing, Nothing)
+  //. Nothing
+  //.
+  //. > alt(Nothing, Just(1))
+  //. Just(1)
+  //.
+  //. > alt(Just(2), Just(3))
+  //. Just(2)
+  //. ```
+  function alt(x, y) {
+    return Alt.methods.alt(x)(y);
+  }
+
+  //# zero :: Plus f => TypeRep f -> f a
+  //.
+  //. Function wrapper for [`fantasy-land/zero`][].
+  //.
+  //. `fantasy-land/zero` implementations are provided for the following
+  //. built-in types: Array and Object.
+  //.
+  //. ```javascript
+  //. > zero(Array)
+  //. []
+  //.
+  //. > zero(Object)
+  //. {}
+  //.
+  //. > zero(Maybe)
+  //. Nothing
+  //. ```
+  function zero(typeRep) {
+    return Plus.methods.zero(typeRep)();
+  }
+
+  //# reduce :: Foldable f => ((b, a) -> b, b, f a) -> b
+  //.
+  //. Function wrapper for [`fantasy-land/reduce`][].
+  //.
+  //. `fantasy-land/reduce` implementations are provided for the following
+  //. built-in types: Array and Object.
+  //.
+  //. ```javascript
+  //. > reduce((xs, x) => [x].concat(xs), [], [1, 2, 3])
+  //. [3, 2, 1]
+  //.
+  //. > reduce(concat, '', Cons('foo', Cons('bar', Cons('baz', Nil))))
+  //. 'foobarbaz'
+  //. ```
+  function reduce(f, x, foldable) {
+    return Foldable.methods.reduce(foldable)(f, x);
+  }
+
+  //# traverse :: (Applicative f, Traversable t) => (TypeRep f, a -> f b, t a) -> f (t b)
+  //.
+  //. Function wrapper for [`fantasy-land/traverse`][].
+  //.
+  //. `fantasy-land/traverse` implementations are provided for the following
+  //. built-in types: Array and Object.
+  //.
+  //. See also [`sequence`](#sequence).
+  //.
+  //. ```javascript
+  //. > traverse(Array, x => x, [[1, 2, 3], [4, 5]])
+  //. [[1, 4], [1, 5], [2, 4], [2, 5], [3, 4], [3, 5]]
+  //.
+  //. > traverse(Identity, x => Identity(x + 1), [1, 2, 3])
+  //. Identity([2, 3, 4])
+  //. ```
+  function traverse(typeRep, f, traversable) {
+    return Traversable.methods.traverse(traversable)(typeRep, f);
+  }
+
+  //# sequence :: (Applicative f, Traversable t) => (TypeRep f, t (f a)) -> f (t a)
+  //.
+  //. Inverts the given `t (f a)` to produce an `f (t a)`.
+  //.
+  //. This function is derived from [`traverse`](#traverse).
+  //.
+  //. ```javascript
+  //. > sequence(Array, Identity([1, 2, 3]))
+  //. [Identity(1), Identity(2), Identity(3)]
+  //.
+  //. > sequence(Identity, [Identity(1), Identity(2), Identity(3)])
+  //. Identity([1, 2, 3])
+  //. ```
+  function sequence(typeRep, traversable) {
+    return traverse(typeRep, identity, traversable);
+  }
+
+  //# extend :: Extend w => (w a -> b, w a) -> w b
+  //.
+  //. Function wrapper for [`fantasy-land/extend`][].
+  //.
+  //. `fantasy-land/extend` implementations are provided for the following
+  //. built-in types: Array.
+  //.
+  //. ```javascript
+  //. > extend(xs => xs.length, ['foo', 'bar', 'baz', 'quux'])
+  //. [4]
+  //. ```
+  function extend(f, extend_) {
+    return Extend.methods.extend(extend_)(f);
+  }
+
+  //# extract :: Comonad w => w a -> a
+  //.
+  //. Function wrapper for [`fantasy-land/extract`][].
+  //.
+  //. ```javascript
+  //. > extract(Identity(42))
+  //. 42
+  //. ```
+  function extract(comonad) {
+    return Comonad.methods.extract(comonad)();
+  }
+
+  //# contramap :: Contravariant f => (b -> a, f a) -> f b
+  //.
+  //. Function wrapper for [`fantasy-land/contramap`][].
+  //.
+  //. `fantasy-land/contramap` implementations are provided for the following
+  //. built-in types: Function.
+  //.
+  //. ```javascript
+  //. > contramap(s => s.length, Math.sqrt)('Sanctuary')
+  //. 3
+  //. ```
+  function contramap(f, contravariant) {
+    return Contravariant.methods.contramap(contravariant)(f);
+  }
+
+  return {
+    TypeClass: TypeClass,
+    Setoid: Setoid,
+    Ord: Ord,
+    Semigroup: Semigroup,
+    Monoid: Monoid,
+    Functor: Functor,
+    Bifunctor: Bifunctor,
+    Profunctor: Profunctor,
+    Apply: Apply,
+    Applicative: Applicative,
+    Chain: Chain,
+    ChainRec: ChainRec,
+    Monad: Monad,
+    Alt: Alt,
+    Plus: Plus,
+    Alternative: Alternative,
+    Foldable: Foldable,
+    Traversable: Traversable,
+    Extend: Extend,
+    Comonad: Comonad,
+    Contravariant: Contravariant,
+    toString: toString,
+    equals: equals,
+    lt: lt,
+    lte: lte,
+    gt: gt,
+    gte: gte,
+    concat: concat,
+    empty: empty,
+    map: map,
+    bimap: bimap,
+    promap: promap,
+    ap: ap,
+    lift2: lift2,
+    lift3: lift3,
+    apFirst: apFirst,
+    apSecond: apSecond,
+    of: of,
+    chain: chain,
+    join: join,
+    chainRec: chainRec,
+    filter: filter,
+    filterM: filterM,
+    alt: alt,
+    zero: zero,
+    reduce: reduce,
+    traverse: traverse,
+    sequence: sequence,
+    extend: extend,
+    extract: extract,
+    contramap: contramap
+  };
+
+}));
+
+//. [Alt]:                      https://github.com/fantasyland/fantasy-land#alt
+//. [Alternative]:              https://github.com/fantasyland/fantasy-land#alternative
+//. [Applicative]:              https://github.com/fantasyland/fantasy-land#applicative
+//. [Apply]:                    https://github.com/fantasyland/fantasy-land#apply
+//. [Bifunctor]:                https://github.com/fantasyland/fantasy-land#bifunctor
+//. [Chain]:                    https://github.com/fantasyland/fantasy-land#chain
+//. [ChainRec]:                 https://github.com/fantasyland/fantasy-land#chainrec
+//. [Comonad]:                  https://github.com/fantasyland/fantasy-land#comonad
+//. [Contravariant]:            https://github.com/fantasyland/fantasy-land#contravariant
+//. [Extend]:                   https://github.com/fantasyland/fantasy-land#extend
+//. [FL]:                       https://github.com/fantasyland/fantasy-land
+//. [Foldable]:                 https://github.com/fantasyland/fantasy-land#foldable
+//. [Functor]:                  https://github.com/fantasyland/fantasy-land#functor
+//. [Monad]:                    https://github.com/fantasyland/fantasy-land#monad
+//. [Monoid]:                   https://github.com/fantasyland/fantasy-land#monoid
+//. [Ord]:                      https://github.com/fantasyland/fantasy-land#ord
+//. [Plus]:                     https://github.com/fantasyland/fantasy-land#plus
+//. [Profunctor]:               https://github.com/fantasyland/fantasy-land#profunctor
+//. [Semigroup]:                https://github.com/fantasyland/fantasy-land#semigroup
+//. [Setoid]:                   https://github.com/fantasyland/fantasy-land#setoid
+//. [Traversable]:              https://github.com/fantasyland/fantasy-land#traversable
+//. [`fantasy-land/alt`]:       https://github.com/fantasyland/fantasy-land#alt-method
+//. [`fantasy-land/ap`]:        https://github.com/fantasyland/fantasy-land#ap-method
+//. [`fantasy-land/bimap`]:     https://github.com/fantasyland/fantasy-land#bimap-method
+//. [`fantasy-land/chain`]:     https://github.com/fantasyland/fantasy-land#chain-method
+//. [`fantasy-land/chainRec`]:  https://github.com/fantasyland/fantasy-land#chainrec-method
+//. [`fantasy-land/concat`]:    https://github.com/fantasyland/fantasy-land#concat-method
+//. [`fantasy-land/contramap`]: https://github.com/fantasyland/fantasy-land#contramap-method
+//. [`fantasy-land/empty`]:     https://github.com/fantasyland/fantasy-land#empty-method
+//. [`fantasy-land/equals`]:    https://github.com/fantasyland/fantasy-land#equals-method
+//. [`fantasy-land/extend`]:    https://github.com/fantasyland/fantasy-land#extend-method
+//. [`fantasy-land/extract`]:   https://github.com/fantasyland/fantasy-land#extract-method
+//. [`fantasy-land/lte`]:       https://github.com/fantasyland/fantasy-land#lte-method
+//. [`fantasy-land/map`]:       https://github.com/fantasyland/fantasy-land#map-method
+//. [`fantasy-land/of`]:        https://github.com/fantasyland/fantasy-land#of-method
+//. [`fantasy-land/promap`]:    https://github.com/fantasyland/fantasy-land#promap-method
+//. [`fantasy-land/reduce`]:    https://github.com/fantasyland/fantasy-land#reduce-method
+//. [`fantasy-land/traverse`]:  https://github.com/fantasyland/fantasy-land#traverse-method
+//. [`fantasy-land/zero`]:      https://github.com/fantasyland/fantasy-land#zero-method
+//. [type-classes]:             https://github.com/sanctuary-js/sanctuary-def#type-classes
+
+},{"sanctuary-type-identifiers":355}],355:[function(require,module,exports){
+/*
+        @@@@@@@            @@@@@@@         @@
+      @@       @@        @@       @@      @@@
+    @@   @@@ @@  @@    @@   @@@ @@  @@   @@@@@@ @@   @@@  @@ @@@      @@@@
+   @@  @@   @@@   @@  @@  @@   @@@   @@   @@@   @@   @@@  @@@   @@  @@@   @@
+   @@  @@   @@@   @@  @@  @@   @@@   @@   @@@   @@   @@@  @@@   @@  @@@@@@@@
+   @@  @@   @@@  @@   @@  @@   @@@  @@    @@@   @@   @@@  @@@   @@  @@@
+    @@   @@@ @@@@@     @@   @@@ @@@@@      @@@    @@@ @@  @@@@@@      @@@@@
+      @@                 @@                           @@  @@
+        @@@@@@@            @@@@@@@               @@@@@    @@
+                                                          */
+//. # sanctuary-type-identifiers
+//.
+//. A type is a set of values. Boolean, for example, is the type comprising
+//. `true` and `false`. A value may be a member of multiple types (`42` is a
+//. member of Number, PositiveNumber, Integer, and many other types).
+//.
+//. In certain situations it is useful to divide JavaScript values into
+//. non-overlapping types. The language provides two constructs for this
+//. purpose: the [`typeof`][1] operator and [`Object.prototype.toString`][2].
+//. Each has pros and cons, but neither supports user-defined types.
+//.
+//. This package specifies an [algorithm][3] for deriving a _type identifier_
+//. from any JavaScript value, and exports an implementation of the algorithm.
+//. Authors of algebraic data types may follow this specification in order to
+//. make their data types compatible with the algorithm.
+//.
+//. ### Algorithm
+//.
+//. 1.  Take any JavaScript value `x`.
+//.
+//. 2.  If `x` is `null` or `undefined`, go to step 6.
+//.
+//. 3.  If `x.constructor` evaluates to `null` or `undefined`, go to step 6.
+//.
+//. 4.  If `x.constructor.prototype === x`, go to step 6. This check prevents a
+//.     prototype object from being considered a member of its associated type.
+//.
+//. 5.  If `typeof x.constructor['@@type']` evaluates to `'string'`, return
+//.     the value of `x.constructor['@@type']`.
+//.
+//. 6.  Return the [`Object.prototype.toString`][2] representation of `x`
+//.     without the leading `'[object '` and trailing `']'`.
+//.
+//. ### Compatibility
+//.
+//. For an algebraic data type to be compatible with the [algorithm][3]:
+//.
+//.   - every member of the type must have a `constructor` property pointing
+//.     to an object known as the _type representative_;
+//.
+//.   - the type representative must have a `@@type` property; and
+//.
+//.   - the type representative's `@@type` property (the _type identifier_)
+//.     must be a string primitive, ideally `'<npm-package-name>/<type-name>'`.
+//.
+//. For example:
+//.
+//. ```javascript
+//. //  Identity :: a -> Identity a
+//. function Identity(x) {
+//.   if (!(this instanceof Identity)) return new Identity(x);
+//.   this.value = x;
+//. }
+//.
+//. Identity['@@type'] = 'my-package/Identity';
+//. ```
+//.
+//. Note that by using a constructor function the `constructor` property is set
+//. implicitly for each value created. Constructor functions are convenient for
+//. this reason, but are not required. This definition is also valid:
+//.
+//. ```javascript
+//. //  IdentityTypeRep :: TypeRep Identity
+//. var IdentityTypeRep = {
+//.   '@@type': 'my-package/Identity'
+//. };
+//.
+//. //  Identity :: a -> Identity a
+//. function Identity(x) {
+//.   return {constructor: IdentityTypeRep, value: x};
+//. }
+//. ```
+//.
+//. ### Usage
+//.
+//. ```javascript
+//. var Identity = require('my-package').Identity;
+//. var type = require('sanctuary-type-identifiers');
+//.
+//. type(null);         // => 'Null'
+//. type(true);         // => 'Boolean'
+//. type([1, 2, 3]);    // => 'Array'
+//. type(Identity);     // => 'Function'
+//. type(Identity(0));  // => 'my-package/Identity'
+//. ```
+//.
+//.
+//. [1]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/typeof
+//. [2]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/toString
+//. [3]: #algorithm
+
+(function(f) {
+
+  'use strict';
+
+  if (typeof module === 'object' && typeof module.exports === 'object') {
+    module.exports = f();
+  } else if (typeof define === 'function' && define.amd != null) {
+    define([], f);
+  } else {
+    self.sanctuaryTypeIdentifiers = f();
+  }
+
+}(function() {
+
+  'use strict';
+
+  //  $$type :: String
+  var $$type = '@@type';
+
+  //  type :: Any -> String
+  function type(x) {
+    return x != null &&
+           x.constructor != null &&
+           x.constructor.prototype !== x &&
+           typeof x.constructor[$$type] === 'string' ?
+      x.constructor[$$type] :
+      Object.prototype.toString.call(x).slice('[object '.length, -']'.length);
+  }
+
+  return type;
+
+}));
+
+},{}],356:[function(require,module,exports){
+/*
+        @@@@@@@            @@@@@@@         @@
+      @@       @@        @@       @@      @@@
+    @@   @@@ @@  @@    @@   @@@ @@  @@   @@@@@@ @@   @@@  @@ @@@      @@@@
+   @@  @@   @@@   @@  @@  @@   @@@   @@   @@@   @@   @@@  @@@   @@  @@@   @@
+   @@  @@   @@@   @@  @@  @@   @@@   @@   @@@   @@   @@@  @@@   @@  @@@@@@@@
+   @@  @@   @@@  @@   @@  @@   @@@  @@    @@@   @@   @@@  @@@   @@  @@@
+    @@   @@@ @@@@@     @@   @@@ @@@@@      @@@    @@@ @@  @@@@@@      @@@@@
+      @@                 @@                           @@  @@
+        @@@@@@@            @@@@@@@               @@@@@    @@
+                                                          */
+//. # sanctuary-type-identifiers
+//.
+//. A type is a set of values. Boolean, for example, is the type comprising
+//. `true` and `false`. A value may be a member of multiple types (`42` is a
+//. member of Number, PositiveNumber, Integer, and many other types).
+//.
+//. In certain situations it is useful to divide JavaScript values into
+//. non-overlapping types. The language provides two constructs for this
+//. purpose: the [`typeof`][1] operator and [`Object.prototype.toString`][2].
+//. Each has pros and cons, but neither supports user-defined types.
+//.
+//. sanctuary-type-identifiers comprises:
+//.
+//.   - an npm and browser -compatible package for deriving the
+//.     _type identifier_ of a JavaScript value; and
+//.   - a specification which authors may follow to specify type
+//.     identifiers for their types.
+//.
+//. ### Specification
+//.
+//. For a type to be compatible with the algorithm:
+//.
+//.   - every member of the type MUST have a `constructor` property
+//.     pointing to an object known as the _type representative_;
+//.
+//.   - the type representative MUST have a `@@type` property
+//.     (the _type identifier_); and
+//.
+//.   - the type identifier MUST be a string primitive and SHOULD have
+//.     format `'<namespace>/<name>[@<version>]'`, where:
+//.
+//.       - `<namespace>` MUST consist of one or more characters, and
+//.         SHOULD equal the name of the npm package which defines the
+//.         type (including [scope][4] where appropriate);
+//.
+//.       - `<name>` MUST consist of one or more characters, and SHOULD
+//.         be the unique name of the type; and
+//.
+//.       - `<version>` MUST consist of one or more digits, and SHOULD
+//.         represent the version of the type.
+//.
+//. If the type identifier does not conform to the format specified above,
+//. it is assumed that the entire string represents the _name_ of the type;
+//. _namespace_ will be `null` and _version_ will be `0`.
+//.
+//. If the _version_ is not given, it is assumed to be `0`.
+//.
+//. For example:
+//.
+//. ```javascript
+//. //  Identity :: a -> Identity a
+//. function Identity(x) {
+//.   if (!(this instanceof Identity)) return new Identity(x);
+//.   this.value = x;
+//. }
+//.
+//. Identity['@@type'] = 'my-package/Identity';
+//. ```
+//.
+//. Note that by using a constructor function the `constructor` property is set
+//. implicitly for each value created. Constructor functions are convenient for
+//. this reason, but are not required. This definition is also valid:
+//.
+//. ```javascript
+//. //  IdentityTypeRep :: TypeRep Identity
+//. var IdentityTypeRep = {
+//.   '@@type': 'my-package/Identity'
+//. };
+//.
+//. //  Identity :: a -> Identity a
+//. function Identity(x) {
+//.   return {constructor: IdentityTypeRep, value: x};
+//. }
+//. ```
+
+(function(f) {
+
+  'use strict';
+
+  if (typeof module === 'object' && typeof module.exports === 'object') {
+    module.exports = f();
+  } else if (typeof define === 'function' && define.amd != null) {
+    define([], f);
+  } else {
+    self.sanctuaryTypeIdentifiers = f();
+  }
+
+}(function() {
+
+  'use strict';
+
+  //  $$type :: String
+  var $$type = '@@type';
+
+  //  pattern :: RegExp
+  var pattern = new RegExp(
+    '^'
+  + '([^]+)'      //  <namespace>
+  + '/'           //  SOLIDUS (U+002F)
+  + '([^]+?)'     //  <name>
+  + '(?:'         //  optional non-capturing group {
+  +   '@'         //    COMMERCIAL AT (U+0040)
+  +   '([0-9]+)'  //    <version>
+  + ')?'          //  }
+  + '$'
+  );
+
+  //. ### Usage
+  //.
+  //. ```javascript
+  //. const type = require('sanctuary-type-identifiers');
+  //. ```
+  //.
+  //. ```javascript
+  //. > function Identity(x) {
+  //. .   if (!(this instanceof Identity)) return new Identity(x);
+  //. .   this.value = x;
+  //. . }
+  //. . Identity['@@type'] = 'my-package/Identity@1';
+  //.
+  //. > type.parse(type(Identity(0)))
+  //. {namespace: 'my-package', name: 'Identity', version: 1}
+  //. ```
+  //.
+  //. ### API
+  //.
+  //# type :: Any -> String
+  //.
+  //. Takes any value and returns a string which identifies its type. If the
+  //. value conforms to the [specification][3], the custom type identifier is
+  //. returned.
+  //.
+  //. ```javascript
+  //. > type(null)
+  //. 'Null'
+  //.
+  //. > type(true)
+  //. 'Boolean'
+  //.
+  //. > type(Identity(0))
+  //. 'my-package/Identity@1'
+  //. ```
+  function type(x) {
+    return x != null &&
+           x.constructor != null &&
+           x.constructor.prototype !== x &&
+           typeof x.constructor[$$type] === 'string' ?
+      x.constructor[$$type] :
+      Object.prototype.toString.call(x).slice('[object '.length, -']'.length);
+  }
+
+  //# type.parse :: String -> { namespace :: Nullable String, name :: String, version :: Number }
+  //.
+  //. Takes any string and parses it according to the [specification][3],
+  //. returning an object with `namespace`, `name`, and `version` fields.
+  //.
+  //. ```javascript
+  //. > type.parse('my-package/List@2')
+  //. {namespace: 'my-package', name: 'List', version: 2}
+  //.
+  //. > type.parse('nonsense!')
+  //. {namespace: null, name: 'nonsense!', version: 0}
+  //.
+  //. > type.parse(Identity['@@type'])
+  //. {namespace: 'my-package', name: 'Identity', version: 1}
+  //. ```
+  type.parse = function parse(s) {
+    var groups = pattern.exec(s);
+    return {
+      namespace: groups == null || groups[1] == null ? null : groups[1],
+      name:      groups == null                      ? s    : groups[2],
+      version:   groups == null || groups[3] == null ? 0    : Number(groups[3])
+    };
+  };
+
+  return type;
+
+}));
+
+//. [1]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/typeof
+//. [2]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/toString
+//. [3]: #specification
+//. [4]: https://docs.npmjs.com/misc/scope
+
+},{}],357:[function(require,module,exports){
+'use strict';
+
+const R = require('ramda');
+const _ = require('lodash');
+
+const F = require('fluture');
+
+const futurizeLib = require('futurize');
+const futurize  = futurizeLib.futurize( F );
+const futurizeV = futurizeLib.futurizeV( F );
+const futurizeP = futurizeLib.futurizeP( F );
+
+const snakeCase = _.snakeCase;
+const camelCase = _.camelCase;
+
+
+const decorate = (...rest) => {
+
+  let decorators = R.init(rest);
+  let fnToDecorate = R.last(rest);
+
+  return R.compose( ...decorators )( fnToDecorate );
+}
+
+
+
+
+
+const mapKeys = R.curry( (f,obj) =>  {
+
+    const rFn = (obj,[k,v]) =>  R.assoc( f(k) ,v,obj);
+
+    let kvPairs = R.toPairs( obj );
+
+    return R.reduce( rFn,  {} ,kvPairs )
+})
+
+
+
+const camelCaseKeys = mapKeys( _.camelCase )
+
+const snakeCaseKeys = mapKeys( _.snakeCase )
+
+
+
+
+
+
+
+const parseJSON = R.curry( (keysToParse, obj) => {
+
+    let keysInObjToParse = R.intersection( R.keys(obj), keysToParse );
+
+    let newObj = R.reduce( (newObj, key) => {
+
+        return R.assoc(key, JSON.parse(obj[key]), newObj)
+
+    }, {}, keysInObjToParse )
+
+
+    return R.merge(obj, newObj)
+})
+
+
+
+
+
+
+
+
+const isNotNil = R.complement( R.isNil );
+
+
+
+
+
+
+
+const rename = R.curry( ( oldName, newName, obj ) => {
+
+    if(R.isNil(obj)){
+        return null
+    }
+
+
+    const go = R.pipe(
+        R.prop( oldName ),
+        R.assoc( newName, R.__, obj ),
+        R.omit([oldName])
+    );
+
+    return go( obj );
+})
+
+
+const renameAll = R.curry( (namesArr, obj) => {
+
+    const rFn = (obj, [oldName, newName]) => rename( oldName, newName, obj );
+
+    return R.reduce( rFn, obj, namesArr);
+})
+
+
+
+
+const splitWithArr = function splitWithArr(splitNumbers, xs){
+
+    if( R.isEmpty( splitNumbers ) ){
+        return [];
+    }
+
+    let [ n, ...splitNumbersNext ] = splitNumbers;
+
+    let [ xsSplitL, xsSplitR ] = R.splitAt( n, xs );
+
+    return [ xsSplitL, ...splitWithArr(splitNumbersNext,  xsSplitR ) ]
+}
+
+
+const omitBy = R.curry( (p,obj) =>  {
+
+    const rFn = (obj,[k,v]) => p(v,k) ? obj : R.assoc(k,v,obj);
+
+    let kvPairs = R.toPairs( obj );
+
+    return R.reduce( rFn,  {} ,kvPairs )
+})
+
+
+
+
+
+
+const isUpperCase = R.chain( R.equals, R.toUpper );
+const isLowerCase = R.chain( R.equals, R.toLower );
+
+const isEmptyString = R.both( R.is(String), R.isEmpty );
+
+
+const lookupFrom = R.flip( R.prop );
+
+
+
+const preserveOrderBy = R.curry( (fn, xs, objs) => {
+
+    let objsIndexed = R.indexBy( fn, objs );
+
+    return R.map(  x => objsIndexed[ x ] || null  ,  xs )
+} );
+
+
+const preserveOrderByIds = preserveOrderBy( R.prop('id') );
+
+
+
+
+const preserveGroupOrderBy = R.curry( ( fn , ids, objs) => {
+
+    const objsGroupedByFn = R.groupBy( fn, objs );
+
+    return R.map( id =>  objsGroupedByFn[ id ] || [] ,  ids )
+});
+
+
+
+
+
+
+
+const preserveStructureBy = R.curry( (projFnsOrIndexFn, xs, objs) => {
+
+
+    let projFns = R.is( Function, projFnsOrIndexFn ) ?
+        [projFnsOrIndexFn, R.identity ]
+      : projFnsOrIndexFn;
+
+
+    let [ indexFn, nextFn ] = projFns;
+
+
+    let objsIndexed = R.indexBy( indexFn, objs );
+
+
+    const go = function go( xs ){
+
+        if( R.isNil(xs) ){
+            return null
+        };
+
+        if( R.is( Array, xs ) ){
+            return R.map( go, xs )
+        }
+
+
+        if( R.is( Object, xs ) ){
+
+            let key = indexFn( xs );
+            return nextFn(objsIndexed[ key ]);
+        }
+
+        return nextFn( objsIndexed[ xs ] )
+    };
+
+    return go( xs );
+} );
+
+
+const preserveStructureByIds = preserveStructureBy( R.prop('id') );
+
+
+
+
+
+const flattenAndClean = R.unless(
+    R.isNil,
+    R.pipe(
+        R.flatten,
+        R.reject( R.isNil )
+    )
+);
+
+
+
+
+
+
+const concatAll = R.reduce( R.concat, [] );
+
+
+const indexesFromList = R.lift( R.times( R.identity ) )( R.length );
+
+
+
+
+
+
+
+
+
+const _sortingMappingChaining = R.curry( R.pipe(
+    R.zipWith( R.flip( R.pair) ),
+    R.fromPairs
+))
+
+const _mkSortingMapping = R.chain( _sortingMappingChaining, indexesFromList  );
+
+
+
+const sortUsing = R.curry( (fn, orderList) => {
+
+    const sortingMapping = _mkSortingMapping( orderList );
+    const lookupFromSortingMapping = lookupFrom( sortingMapping );
+
+    const sortingFn = R.pipe(
+        fn,
+        lookupFromSortingMapping
+    )
+
+    return R.sortBy( sortingFn );
+})
+
+
+
+const inside = R.flip( R.contains );
+
+
+const propInside = R.curry( (k, list, obj) => {
+
+    let prop = R.prop(k, obj);
+    return inside(list, prop);
+} );
+
+
+
+
+const toCapitalCase = R.pipe(
+    R.toLower,
+    R.lift( R.concat )(R.compose( R.toUpper, R.head), R.tail)
+);
+
+const toCapitalCaseEachWord = R.pipe(
+    R.split(' '),
+    R.map( toCapitalCase ),
+    R.join(' ')
+);
+
+
+const isNotArray = R.complement( R.is( Array ) );
+
+
+const isPlainObj = R.both(
+   isNotArray,
+   R.is( Object )
+)
+
+
+
+
+const deepMergeWith = R.curry( (f, objX, objY) => {
+
+  const _deepMerge = function _deepMerge( objX, objY){
+
+      if( isPlainObj( objX ) && isPlainObj( objY ) ){
+
+         return R.mergeWith( _deepMerge, objX, objY )
+      }
+
+      return f( objX, objY )
+  };
+
+  return R.mergeWith( _deepMerge, objX, objY  )
+} );
+
+
+const deepMerge = deepMergeWith( R.nthArg(1) )
+
+
+
+
+
+
+const _mkDefaultObjTo = R.curry( (merge, defaultObj, obj) => {
+
+    let _defaultObj = R.defaultTo( {}, defaultObj  );
+    let _obj = R.defaultTo( {}, obj  );
+
+
+
+    return merge( R.defaultTo, _defaultObj, _obj );
+} )
+
+
+const defaultDeepObjTo = _mkDefaultObjTo( deepMergeWith )
+
+const defaultObjTo = _mkDefaultObjTo( R.mergeWith )
+
+
+
+
+
+
+const pack = R.curry( (name, fields, obj) => {
+
+    return R.lift( R.assoc(name) )(R.pick(fields), R.omit(fields))(obj);
+} );
+
+
+
+const packMany = R.curry( (list, obj) => {
+
+    const reducerFn = ( [allFieldsToPack, o], [name, fields]) => {
+
+        let nextAllFieldsTopack = R.concat( allFieldsToPack, fields );
+        let nextObj = R.merge( o, pack( name, fields, obj ) );
+
+        return [ nextAllFieldsTopack, nextObj ];
+    }
+
+    let [ allFieldsToPack, objPacked ] = R.reduce( reducerFn, [[], {}],  list );
+
+    return R.omit(allFieldsToPack, objPacked );
+} );
+
+
+
+
+
+const toPairsProtoChain = obj => {
+
+    let kvPairs = [];
+
+    _.forIn( obj, (v,k,context) => kvPairs.push([k, v]) )
+
+    return kvPairs;
+}
+
+
+
+
+
+
+
+const _setFuturizeAllDefaultOptionsSpec = defaultObjTo({
+    suffix          : 'F',
+    futurizeFn      : futurize
+});
+
+const futurizeAll = (obj, optionsSpec) => {
+
+    let {
+        suffix,
+        futurizeFn
+    } = _setFuturizeAllDefaultOptionsSpec( optionsSpec )
+
+
+    const mkNewKVpair = ([k, fn]) => [`${k}${suffix}`, futurizeFn( fn.bind(obj) )]
+
+    const futurizeKey = R.chain( R.pair, mkNewKVpair );
+
+    const valueIsFn = R.pipe(
+        R.nth(1),
+        R.is( Function )
+    )
+
+    const futurizeKeyIfFn = R.ifElse(
+        valueIsFn,
+        futurizeKey,
+        R.of
+    )
+
+    const go = R.pipe(
+        toPairsProtoChain,
+        R.chain( futurizeKeyIfFn ),
+        R.fromPairs
+    );
+
+
+    return go( obj );
+};
+
+
+
+const maxAll = R.reduce( R.max, -Infinity );
+
+
+
+const maxCodBy = R.curry( (fn,x,y) => {
+
+  let xRes = fn( x )
+  let yRes = fn( y ) ;
+
+  return xRes > yRes ? xRes : yRes;
+});
+
+
+const maxByAll = R.curry( ( fn, xs ) => {
+
+    return R.reduce( R.maxBy(fn) , -Infinity, xs )
+})
+
+
+
+const maxCodByAll = R.curry( ( fn, xs ) => {
+
+    return R.reduce( maxCodBy(fn) , -Infinity, xs )
+})
+
+
+
+const zipAllWith = R.curry( (f, xss) => {
+
+    const fFixArity = R.apply( f );
+
+    const go = R.pipe(
+        R.transpose,
+        R.map( fFixArity )
+    );
+
+    return go( xss )
+});
+
+
+
+
+
+const _fillNullsLongest = xss => {
+
+    let maxXsLength = maxCodByAll( R.when( R.is( Array ), R.length) , xss );
+
+    const fillNull = xs => {
+
+        let xsLength = R.length( xs );
+
+        let nullListSize = maxXsLength - xsLength;
+
+        let nullList = R.repeat( null,  nullListSize);
+
+        return R.concat( xs, nullList )
+    };
+
+    return R.map(  R.when( xs => R.length(xs) < maxXsLength, fillNull ),  xss )
+}
+
+
+
+const zipLongAllWith = R.curry( (f, xss) => {
+
+    const fFixArity = R.apply( f );
+
+    const go = R.pipe(
+        _fillNullsLongest,
+        R.transpose,
+        R.map( fFixArity )
+    );
+
+    return go( xss )
+});
+
+
+
+const zipLongWith = R.curry( (fn, xs, ys)  => {
+    let l1 = xs;
+    let l2 = ys;
+
+    if (xs.length < ys.length) {
+        l1 = R.concat(xs, R.repeat(null, ys.length - xs.length))
+    }
+    else if (ys.length < xs.length) {
+        l2 = R.concat(ys, R.repeat(null, xs.length - ys.length))
+    }
+
+    return R.zipWith(fn,l1, l2)
+});
+
+
+const zipLong = zipLongWith( R.pair );
+
+
+
+
+
+
+// alias
+const I     = R.identity;
+const compl = R.complement;
+const K     = R.always;
+
+
+module.exports = {
+    decorate,
+
+    snakeCase,
+    camelCase,
+    snakeCaseKeys,
+    camelCaseKeys,
+    mapKeys,
+    parseJSON,
+    toCapitalCase,
+    toCapitalCaseEachWord,
+
+    isNotNil,
+    rename,
+    renameAll,
+    splitWithArr,
+    omitBy,
+    isUpperCase,
+    isLowerCase,
+    isEmptyString,
+    lookupFrom,
+
+    preserveOrderBy,
+    preserveOrderByIds,
+    preserveGroupOrderBy,
+    preserveStructureBy,
+    preserveStructureByIds,
+    // preserveListStructureGroupedBy,
+    // preserveListStructureGroupedByIds,
+    // flattenAndCleanIds,
+    flattenAndClean,
+
+    zipAllWith,
+    zipLongWith,
+    zipLong,
+    zipLongAllWith,
+
+    maxAll,
+    maxCodBy,
+    maxByAll,
+    maxCodByAll,
+
+
+    concatAll,
+    indexesFromList,
+    sortUsing,
+    inside,
+    propInside,
+
+    isNotArray,
+    isPlainObj,
+    deepMergeWith,
+    deepMerge,
+    defaultDeepObjTo,
+    defaultObjTo,
+
+    pack,
+    packMany,
+
+    futurizeAll,
+    toPairsProtoChain,
+
+    I,
+    compl,
+    K
+}
+
+},{"fluture":353,"futurize":38,"lodash":40,"ramda":42}],358:[function(require,module,exports){
 /*
              ############                  #
             ############                  ###
@@ -43482,147 +52663,13 @@ module.exports = _curry3(function zipWith(fn, a, b) {
 //. [`fantasy-land/zero`]:      https://github.com/fantasyland/fantasy-land#zero-method
 //. [type-classes]:             https://github.com/sanctuary-js/sanctuary-def#type-classes
 
-},{"sanctuary-type-identifiers":322}],322:[function(require,module,exports){
-/*
-        @@@@@@@            @@@@@@@         @@
-      @@       @@        @@       @@      @@@
-    @@   @@@ @@  @@    @@   @@@ @@  @@   @@@@@@ @@   @@@  @@ @@@      @@@@
-   @@  @@   @@@   @@  @@  @@   @@@   @@   @@@   @@   @@@  @@@   @@  @@@   @@
-   @@  @@   @@@   @@  @@  @@   @@@   @@   @@@   @@   @@@  @@@   @@  @@@@@@@@
-   @@  @@   @@@  @@   @@  @@   @@@  @@    @@@   @@   @@@  @@@   @@  @@@
-    @@   @@@ @@@@@     @@   @@@ @@@@@      @@@    @@@ @@  @@@@@@      @@@@@
-      @@                 @@                           @@  @@
-        @@@@@@@            @@@@@@@               @@@@@    @@
-                                                          */
-//. # sanctuary-type-identifiers
-//.
-//. A type is a set of values. Boolean, for example, is the type comprising
-//. `true` and `false`. A value may be a member of multiple types (`42` is a
-//. member of Number, PositiveNumber, Integer, and many other types).
-//.
-//. In certain situations it is useful to divide JavaScript values into
-//. non-overlapping types. The language provides two constructs for this
-//. purpose: the [`typeof`][1] operator and [`Object.prototype.toString`][2].
-//. Each has pros and cons, but neither supports user-defined types.
-//.
-//. This package specifies an [algorithm][3] for deriving a _type identifier_
-//. from any JavaScript value, and exports an implementation of the algorithm.
-//. Authors of algebraic data types may follow this specification in order to
-//. make their data types compatible with the algorithm.
-//.
-//. ### Algorithm
-//.
-//. 1.  Take any JavaScript value `x`.
-//.
-//. 2.  If `x` is `null` or `undefined`, go to step 6.
-//.
-//. 3.  If `x.constructor` evaluates to `null` or `undefined`, go to step 6.
-//.
-//. 4.  If `x.constructor.prototype === x`, go to step 6. This check prevents a
-//.     prototype object from being considered a member of its associated type.
-//.
-//. 5.  If `typeof x.constructor['@@type']` evaluates to `'string'`, return
-//.     the value of `x.constructor['@@type']`.
-//.
-//. 6.  Return the [`Object.prototype.toString`][2] representation of `x`
-//.     without the leading `'[object '` and trailing `']'`.
-//.
-//. ### Compatibility
-//.
-//. For an algebraic data type to be compatible with the [algorithm][3]:
-//.
-//.   - every member of the type must have a `constructor` property pointing
-//.     to an object known as the _type representative_;
-//.
-//.   - the type representative must have a `@@type` property; and
-//.
-//.   - the type representative's `@@type` property (the _type identifier_)
-//.     must be a string primitive, ideally `'<npm-package-name>/<type-name>'`.
-//.
-//. For example:
-//.
-//. ```javascript
-//. //  Identity :: a -> Identity a
-//. function Identity(x) {
-//.   if (!(this instanceof Identity)) return new Identity(x);
-//.   this.value = x;
-//. }
-//.
-//. Identity['@@type'] = 'my-package/Identity';
-//. ```
-//.
-//. Note that by using a constructor function the `constructor` property is set
-//. implicitly for each value created. Constructor functions are convenient for
-//. this reason, but are not required. This definition is also valid:
-//.
-//. ```javascript
-//. //  IdentityTypeRep :: TypeRep Identity
-//. var IdentityTypeRep = {
-//.   '@@type': 'my-package/Identity'
-//. };
-//.
-//. //  Identity :: a -> Identity a
-//. function Identity(x) {
-//.   return {constructor: IdentityTypeRep, value: x};
-//. }
-//. ```
-//.
-//. ### Usage
-//.
-//. ```javascript
-//. var Identity = require('my-package').Identity;
-//. var type = require('sanctuary-type-identifiers');
-//.
-//. type(null);         // => 'Null'
-//. type(true);         // => 'Boolean'
-//. type([1, 2, 3]);    // => 'Array'
-//. type(Identity);     // => 'Function'
-//. type(Identity(0));  // => 'my-package/Identity'
-//. ```
-//.
-//.
-//. [1]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/typeof
-//. [2]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/toString
-//. [3]: #algorithm
-
-(function(f) {
-
-  'use strict';
-
-  if (typeof module === 'object' && typeof module.exports === 'object') {
-    module.exports = f();
-  } else if (typeof define === 'function' && define.amd != null) {
-    define([], f);
-  } else {
-    self.sanctuaryTypeIdentifiers = f();
-  }
-
-}(function() {
-
-  'use strict';
-
-  //  $$type :: String
-  var $$type = '@@type';
-
-  //  type :: Any -> String
-  function type(x) {
-    return x != null &&
-           x.constructor != null &&
-           x.constructor.prototype !== x &&
-           typeof x.constructor[$$type] === 'string' ?
-      x.constructor[$$type] :
-      Object.prototype.toString.call(x).slice('[object '.length, -']'.length);
-  }
-
-  return type;
-
-}));
-
-},{}],323:[function(require,module,exports){
-const Ru = require('./Rutils/index.js')
+},{"sanctuary-type-identifiers":359}],359:[function(require,module,exports){
+arguments[4][355][0].apply(exports,arguments)
+},{"dup":355}],360:[function(require,module,exports){
+const Ru = require('rutils')
 
 
-const log = Ru.tap(console.log)
+const log = (...arr) => Ru.tap(Ru.apply(console.log))(arr)
 
 const newUtils = {
     log
@@ -43633,4 +52680,4 @@ module.exports = Ru.merge(
     newUtils
 )
 
-},{"./Rutils/index.js":2}]},{},[4]);
+},{"rutils":351}]},{},[9]);

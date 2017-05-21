@@ -1,4 +1,4 @@
-$(() => {
+const initClient = () => {
     /*
         When sharla open
          * Login with userId to chat system -> to appear to other
@@ -16,9 +16,9 @@ $(() => {
         Authentication process
 
      */
+    const deepstream = require('deepstream.io-client-js')
 
-
-    const Ru = require('./utils.js')
+    const Ru = require('../utils.js')
 
     const moment = require('moment')
 
@@ -29,27 +29,32 @@ $(() => {
     let client = deepstream('127.0.0.1:6020')
 
 
-
-    const getChannelList = Ru.id
-
     const addNewMessage = Ru.curry((client, channel, msg) => {
+
         let msgToAdd = Ru.pickAll(['text', 'user', 'sentDate'], msg)
 
-        // Create message id
-        let msgId = client.getUid()
-        msgToAdd = Ru.assoc('id', msgId, msgToAdd)
+        client
+        .rpc
+        .make(
+            'message-create-id',
+            '',
+            (err, msgId) => {
+                msgToAdd = Ru.assoc('id', msgId, msgToAdd)
 
-        // create
-        let msgRecord = client.record.getRecord(msgId)
+                // create
+                let msgRecord = client.record.getRecord(msgId)
 
-        msgRecord.whenReady(msgRecord => {
+                msgRecord.whenReady(msgRecord => {
 
-            msgRecord.set(msgToAdd)
+                    msgRecord.set(msgToAdd)
 
-            channel.addEntry(msgId)
-        })
+                    channel.addEntry(msgId)
+                })
+            }
+        )
     })
 
+    // Temporary Will be replace
     const displayMsg = spec => {
         let {
             text,
@@ -58,13 +63,15 @@ $(() => {
             id
         } = spec
 
-        $('#messages').append($('<li>').text(text))
+        let s = `${user}[${sentDate}]-said: ${text}`
+
+        $('#messages').append($('<li>').text(s))
     }
 
     const clearTextInput = () => $('#m').val('')
 
 
-    const processMsgRecord = msgRecord =>{
+    const processMsgRecord = msgRecord => {
         //Subscribe to message text [TODO: IMPROVEMENT FOR EDIT OPTION]
         // msgRecord.subscribe('text', Ru.log)
         const go = Ru.pipe(
@@ -77,52 +84,17 @@ $(() => {
 
     const processMsgsRecord = Ru.forEach( processMsgRecord )
 
-    const displayUserStatus = (username, isLogged) => {
+    // Temporary, will be replaced
+    const displayUserStatus = Ru.curry((username, isLogged) => {
         console.log(username, isLogged)
-        let text = `${username} has left the chat`
+        let text = `${username} is offline`
 
         if (isLogged) {
             text = `${username}  has joined the chat`
         }
 
         $('#memberOnline').append($('<li>').text(text))
-    }
-
-
-    // TODO::: Doesn't work properly
-    // const loadMsgsF = Ru.curry((client, spec) => {
-    //     const loadMsg = id => {
-    //
-    //         const go = done => {
-    //             let msg = client.record.getRecord(id)
-    //
-    //             return msg.whenReady(done)
-    //         }
-    //
-    //         return (
-    //             F
-    //             .node(go)
-    //         )
-    //     }
-    //
-    //     let {
-    //         msgIds=[]
-    //     } = spec
-    //
-    //     let msgsF = Ru.map(loadMsg, msgIds)
-    //
-    //     return (
-    //         F
-    //         .parallel(Infinity, msgsF)
-    //     )
-    //
-    //     // load initial list
-    //     // myList = client.record.getList( 'super-long-list', { start: 2000, end: 2200 });
-    //
-    //     // change window
-    //     // myList.setOptions({ start: 2200, end: 2400 });
-    //
-    // })
+    })
 
 
     const loadMsgsC = Ru.curry((client, spec) => {
@@ -142,76 +114,146 @@ $(() => {
     })
 
     // ################## When a chat conversation ####################
-    const startChatConversation = channelName => {
-        // [TODO] Get or create conversation list
-        let channel = client.record.getList(channelName)
+    const startChatConversation = Ru.curry((client, userId, friendId) => {
+        // Get channelId
+        client
+        .rpc
+        .make(
+            'channel-get-id',
+            {userId, friendId},
+            (err, channelId) => {
 
-        channel.whenReady(channel => {
-            // Load the conversation messages
-            let msgIdList  =  channel.getEntries()
+                if (err) {
+                    return Ru.log('Could not get the channel', err)
+                }
 
-            let conversationLength = Ru.length(msgIdList)
+                Ru.log('channelId::: ', channelId)
 
-            let oldMsgSpec = {
-                msgIds: msgIdList
-            }
+                // Subscribe to friend presence
+                let friendPresenceRecord = client.record.getRecord(`presence/${friendId}`)
 
-            loadMsgsC(client, oldMsgSpec)
+                friendPresenceRecord.whenReady(fpr => {
+                    fpr.subscribe('status', displayUserStatus(friendId))
+                })
 
-            // TODO:: event on send button
-            $('#s')
-            .on(
-                'click',
-                () =>  {
-                    let spec = {
-                        text: $('#m').val(),
-                        user: client.getUid(),
-                        sentDate: moment().format()
+                // Request the server to start updating friend status
+                client
+                .rpc
+                .make(
+                    'user-presence-status-subcription',
+                    friendId,
+                    (err, _) => {
+
+                        if (err) {
+                            return Ru.log('Could not request for user presence status order failed', err)
+                        }
+
+
+                        Ru.log('user-presence-status-subcription: ', _)
+
+                        let channel = client.record.getList(channelId)
+
+                        channel.whenReady(channel => {
+                            // Load the conversation messages
+                            let msgIdList  =  channel.getEntries()
+
+                            let oldMsgSpec = {
+                                msgIds: msgIdList
+                            }
+
+                            loadMsgsC(client, oldMsgSpec)
+
+                            // Temporary, will be replaced
+                            // TODO:: Submit button
+                            $('#s')
+                            .on(
+                                'click',
+                                () =>  {
+                                    let spec = {
+                                        text: $('#m').val(),
+                                        user: userId,
+                                        sentDate: moment().format()
+                                    }
+
+                                    addNewMessage(client, channel, spec)
+
+                                    // Temporary, will be removed
+                                    clearTextInput()
+
+                                    return false
+                                }
+                            )
+
+
+                            // subscribe client channel change
+                            channel.on('entry-added', msgId => {
+
+                                let spec = {
+                                    msgIds: [msgId]
+                                }
+
+                                loadMsgsC(client, spec)
+                            })
+                        })
                     }
-
-                    addNewMessage(client, channel, spec)
-
-                    clearTextInput()
-
-                    return false
-                }
-            )
+                )
 
 
-            // subscribe client channel change
-            channel.subscribe( msgIds => {
-                let newMsgIds = Ru.slice(conversationLength, Infinity, msgIds)
+            }
+        )
+    })
 
-                conversationLength = Ru.length(msgIds)
 
-                let spec = {
-                    msgIds: newMsgIds
-                }
-
-                loadMsgsC(client, spec)
-            })
-        })
-    }
-
-    const userLoggedIn = s => {
-
+    const openChatRoom = Ru.curry((client, user, s) => {
         console.log('user logIn: ', s)
 
-        // [TODO]subscribe to user presence to detect when he is online
-        client.presence.subscribe(displayUserStatus)
+        let {
+            username
+        } = user
+
+        client
+        .rpc
+        .make(
+            'user-check-existance',
+            username,
+            (err, alreadyExist) => {
+                if (err) {
+                    return Ru.log('Could not check user existance', err)
+                }
 
 
+                if (alreadyExist) {
+                    //TODO [load User info]
+                    return Ru.log(username, ' already exists')
+                }
 
-        // [TODO] [Load list of user channels]
-        let channelList = getChannelList()
+                // Create user account unless exist
+                client
+                .rpc
+                .make(
+                    'user-create-account',
+                    username,
+                    Ru.log
+                )
+            }
+        )
 
+        // Simulating user selecting chat conversation
+        $('#selectChat')
+        .on(
+            'click',
+            () => {
+                const friendname = $('#friendname').val()
 
-        // When user select channel to start a conversation
-        startChatConversation('channelSelected1')
-    }
+                startChatConversation(client, username, friendname)
 
+            }
+        )
 
-    $('#logIntoChat')
+    })
+
+    // Simulating user opening chat
+    $('#openChatRoom')
     .on(
         'click',
         () => {
@@ -224,9 +266,19 @@ $(() => {
             console.log('user:: ', user)
 
             // Login
-            client.login(user, userLoggedIn)
+            client.login(user, openChatRoom(client, user))
 
             client.on('error', Ru.log)
         }
     )
-})
+}
+
+$(initClient)
+
+/*
+    * if user go into chatRoom >>>>>>>>>> log into chat with {userName, and userId}
+        * Load user save info if already register or create new account
+    * If user leave the chatRoom >>>>>>>>> logout the chat
+    * When user start conversation >>>>>>>>> check if receiver status is online
+    * Data synchronization between sharla-app and sharla-chat
+ */
