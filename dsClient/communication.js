@@ -129,12 +129,6 @@ const initClient = () => {
 
                 Ru.log('channelId::: ', channelId)
 
-                // Subscribe to friend presence
-                let friendPresenceRecord = client.record.getRecord(`presence/${friendId}`)
-
-                friendPresenceRecord.whenReady(fpr => {
-                    fpr.subscribe('status', displayUserStatus(friendId))
-                })
 
                 // Request the server to start updating friend status
                 client
@@ -142,14 +136,24 @@ const initClient = () => {
                 .make(
                     'user-presence-status-subcription',
                     friendId,
-                    (err, _) => {
+                    (err, res) => {
 
                         if (err) {
                             return Ru.log('Could not request for user presence status order failed', err)
                         }
 
+                        let {
+                            idForSubscription
+                        } = res
 
-                        Ru.log('user-presence-status-subcription: ', _)
+                        Ru.log('user-presence-status-subcription: ', res)
+
+                        // Subscribe to friend presence
+                        let friendPresenceRecord = client.record.getRecord(idForSubscription)
+
+                        friendPresenceRecord.whenReady(fpr => {
+                            fpr.subscribe('status', displayUserStatus(friendId))
+                        })
 
                         let channel = client.record.getList(channelId)
 

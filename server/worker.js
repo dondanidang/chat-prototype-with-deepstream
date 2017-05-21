@@ -13,6 +13,13 @@ const C = {
     usersStatusObj: 'usersStatus'
 }
 
+const tables = {
+    presence: 'presences',
+    message: 'messages',
+    channel: 'channels',
+    account: 'accounts'
+}
+
 const makeModel = spec => {
     let {
         userId,
@@ -30,7 +37,7 @@ const userPresenceStatusHasChanged = Ru.curry(
 
         recordOfAllUsersStatus.set(`${userId}.status`, status)
 
-        let pUserRecordName = `presence/${userId}`
+        let pUserRecordName = `${tables.presence}/${userId}`
 
         // UpdateUser presence status
         let userPresenceStatus = client.record.getRecord(pUserRecordName)
@@ -52,7 +59,7 @@ const manageUserPresenceStatus = client => {
     // Retrieve currently loggin in the system
     client.presence.getAll(users => {
         // Get userStatus
-        let usersStatusRecord = client.record.getRecord(C.usersStatusObj)
+        let usersStatusRecord = client.record.getRecord(`${tables.presence}/${C.usersStatusObj}`)
         //Waiting for the record to load
         usersStatusRecord.whenReady(usersStatusRecord => {
 
@@ -93,7 +100,7 @@ const rpcForUserStatusSubscription = client => {
         (userId, response) => {
             Ru.log('userID::: ', userId)
 
-            const presenceRecord = client.record.getRecord(`presence/${userId}`)
+            const presenceRecord = client.record.getRecord(`${tables.presence}/${userId}`)
 
 
             const sendResponse = err => {
@@ -107,13 +114,14 @@ const rpcForUserStatusSubscription = client => {
 
                 response.send({
                     status: 'READY',
-                    text: `Can subscribe to record name "presence/${userId}"`
+                    text: `Can subscribe to record name "${tables.presence}/${userId}"`,
+                    idForSubscription: `${tables.presence}/${userId}`
                 })
             }
 
             presenceRecord.whenReady(presenceRecord => {
 
-                const usersStatus = client.record.getRecord(C.usersStatusObj)
+                const usersStatus = client.record.getRecord(`${tables.presence}/${C.usersStatusObj}`)
 
                 usersStatus.whenReady(usersStatus => {
 
@@ -164,7 +172,7 @@ const rpcForMessageIdCreation = client => {
     .provide(
         'message-create-id',
         (_, response) => {
-        response.send(client.getUid())
+        response.send(`${tables.message}/${client.getUid()}`)
     })
 }
 
@@ -176,7 +184,7 @@ const rpcForUserAccountCreation = client => {
         'user-create-account',
         (userId, response) => {
 
-        let userRecord = client.record.getRecord(`account/${userId}`)
+        let userRecord = client.record.getRecord(`${tables.account}/${userId}`)
 
         userRecord.whenReady(userRecord => {
             // Use model to create userRecord set
@@ -194,7 +202,7 @@ const rpcForUserExistenceChecking = client => {
         'user-check-existance',
         (userId, response) => {
 
-        let userRecord = client.record.getRecord(`account/${userId}`)
+        let userRecord = client.record.getRecord(`${tables.account}/${userId}`)
 
         userRecord.whenReady(userRecord => {
             // Use model to create userRecord set
@@ -216,13 +224,14 @@ const rpcForChannelIdRetrievement = client => {
             friendId
         } = spec
 
-        let userRecord = client.record.getRecord(`account/${userId}`)
+        let userRecord = client.record.getRecord(`${tables.account}/${userId}`)
 
         userRecord.whenReady(userRecord => {
             let channelId = userRecord.get(`friendList.${friendId}.channelId`)
 
             if ( Ru.isNil(channelId) ) {
-                let channelId = client.getUid()
+                let channelId = `${tables.channel}/${client.getUid()}`
+                // [TODO]--> createChannel
 
                 return(
                     userRecord
@@ -230,7 +239,7 @@ const rpcForChannelIdRetrievement = client => {
                         `friendList.${friendId}`,
                         {channelId},
                         err => {
-                            let friendRecord = client.record.getRecord(`account/${friendId}`)
+                            let friendRecord = client.record.getRecord(`${tables.account}/${friendId}`)
                             friendRecord.whenReady(fr => {
                                 // if friend doesn't exist, create it
                                 if (Ru.isEmpty(fr.get())) {
